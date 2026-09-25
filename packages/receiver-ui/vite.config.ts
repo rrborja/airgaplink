@@ -13,6 +13,9 @@ export default defineConfig({
   server: {
     port: 5174,
     host: true,
+    allowedHosts: process.env.ALLOW_PUBLIC_TUNNEL === 'true'
+      ? true
+      : (process.env.RECEIVER_ALLOWED_HOSTS || '').split(',').map(host => host.trim()).filter(Boolean),
   },
   build: {
     outDir: 'dist',

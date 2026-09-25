@@ -23,3 +23,46 @@ canvas[aria-label='QR transfer barcode']:fullscreen {
   background: #fff;
   image-rendering: pixelated;
 }
+
+.optical-stage {
+  background: #fff;
+  color: #111;
+}
+
+.optical-stage:fullscreen {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 100vw;
+  height: 100vh;
+  padding: 12px;
+}
+
+.optical-stage:fullscreen canvas {
+  width: 100% !important;
+  max-height: calc(100vh - 130px) !important;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.optical-stage-status {
+  padding: 6px;
+  font-size: 1.05rem;
+}
+
+.optical-stage-verification {
+  padding: 8px;
+}
+
+.optical-stage-verification strong {
+  display: block;
+  font-size: clamp(2rem, 5vw, 4rem);
+  letter-spacing: 0.08em;
+}
+
+.optical-stage-verification button {
+  margin: 6px;
+  padding: 8px 16px;
+  font-size: 1rem;
+}

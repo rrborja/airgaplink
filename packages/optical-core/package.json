@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types src/roundtrip.test.ts && node --experimental-strip-types src/fec.test.ts && node --experimental-strip-types src/control.test.ts && node --experimental-strip-types src/calibration.test.ts && node --experimental-strip-types src/transfer.test.ts",
+    "test": "node --experimental-strip-types src/roundtrip.test.ts && node --experimental-strip-types src/fec.test.ts && node --experimental-strip-types src/control.test.ts && node --experimental-strip-types src/calibration.test.ts && node --experimental-strip-types src/transfer.test.ts && node --experimental-strip-types src/handshake.test.ts",
     "benchmark": "node --experimental-strip-types src/benchmark.ts"
   },
   "dependencies": {
-    "@digitaldefiance/reed-solomon-erasure.wasm": "1.0.2"
+    "@digitaldefiance/reed-solomon-erasure.wasm": "1.0.2",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0"
   }
 }

@@ -28,7 +28,55 @@ The sender can choose **Transfer files** or **Link benchmark**. The receiver has
 
 The sender renders through WebGL2 when available, with Canvas 2D fallback. The receiver captures camera frames into a worker, tracks the quadrilateral, samples symbol centres, and exports diagnostic metrics as JSON. A worker WebGL2 sampler is attempted and used only after it produces a CRC-valid camera frame; otherwise the measured Canvas path remains active. File mode makes a local ZIP, sends eight source plus two Reed–Solomon repair symbols per block, and cycles unacknowledged blocks. By default the sender constructs a ZIP in STORE mode directly from the selected files, reads it in small ranges, and avoids an archive-sized memory buffer. This supports archives below 4 GiB but does not compress them. Compressed staging on browser-private disk remains an optional mode where available. The receiver writes recovered blocks to browser-private disk or IndexedDB when available and offers a ZIP download only after its SHA-256 matches the sender's manifest. No file or camera bytes are passed to a network API.
 
-High-Speed Optical file mode offers **Direct optical (existing)** and **Audio pairing + ACK**. In audio mode, the receiver generates a random session ID and repeats HELLO through its speaker. HELLO also carries one byte indicating whether local storage is available, so the sender can reject archives above the receiver's 16 MiB memory limit before transmission. The sender listens through its microphone and puts that ID into optical frames. Preparation cycles manifest block zero slowly while the camera is aligned. Once the receiver decodes a paired frame, it confirms the optical profile through sound. The sender then tests logical frame rates of 2, 4, 8, 15, 30, and 60 FPS up to the selected profile's display limit, spending three seconds at each rate. The receiver counts unique CRC-valid frames and selects the fastest stage with sufficient delivery. It sends that selection through a compact acoustic packet, and file transmission starts automatically. During transfer, sustained audio quality reports adjust the frame hold with hysteresis. Grid density remains manually selected on both devices.
+High-Speed Optical file mode offers **Direct optical (existing)** and **Audio pairing + ACK**. In audio mode, the sender first displays a fresh cryptographic optical offer and the receiver responds over its speaker only after decoding that offer. The full session ID is derived from the 128-bit cryptographic ID for compact runtime routing; it is not the handshake’s entropy source. After the key-confirmation exchange, preparation cycles manifest block zero slowly while the camera is aligned. Once the receiver decodes a paired frame, it confirms the optical profile through sound. The sender then tests logical frame rates of 2, 4, 8, 15, 30, and 60 FPS up to the selected profile's display limit, spending three seconds at each rate. The receiver counts unique CRC-valid frames and selects the fastest stage with sufficient delivery. It sends that selection through a compact acoustic packet, and file transmission starts automatically. During transfer, sustained audio quality reports adjust the frame hold with hysteresis. Grid density remains manually selected on both devices.
+
+### Secure audio-paired optical sessions
+
+The audio-paired high-speed mode now begins with an offline authenticated key-agreement handshake. The directions are intentionally asymmetric:
+
+```text
+Optical direction:  Sender → Receiver
+Acoustic direction: Receiver → Sender
+```
+
+```text
+Sender                                      Receiver
+
+generate X25519 key + nonce A
+generate 128-bit session ID
+        │ optical HANDSHAKE_OFFER
+        │ sender public key, nonce A
+        ├───────────────────────────────────>
+        │                         generate X25519 key + nonce B
+        │
+        │  fragmented acoustic response: receiver public key, nonce B,
+        │  selected profile, capabilities, transcript binding
+        <───────────────────────────────────
+        │
+        │ independently derive X25519 + HKDF session material
+        │ display the same 9-digit SAS (for example 482-731-904)
+        │
+        │ optical KEY_CONFIRM (HMAC)
+        ├───────────────────────────────────>
+        │
+        │ fragmented acoustic READY confirmation
+        <───────────────────────────────────
+        │
+        │ AES-256-GCM optical FEC blocks
+        ├═══════════════════════════════════>
+        │ compact audio ACK/status packets
+        <───────────────────────────────────
+```
+
+The AES session key is never transmitted. Both devices independently derive it from the ephemeral X25519 shared secret and handshake transcript.
+
+Both devices display a prominent **Codes match / Cancel** SAS check. Manually comparing and accepting the matching nine-digit codes provides about 30 bits of active-substitution detection; X25519 alone is never treated as identity authentication. The optional hands-free setting continues after three seconds without that comparison, so those sessions are encrypted but peer identity is unverified. Handshake packets are versioned binary structures, not JSON. The canonical transcript binds the protocol version, 128-bit session ID, both ephemeral public keys, both nonces, profile, and capabilities. Each acoustic fragment has the normal packet CRC, is bounded, duplicate-safe, expires after 180 seconds, and is additionally protected by the final transcript binding; fragments from distinct compact session IDs and tags do not combine.
+
+The response is 108 bytes without optional device identity. It is fragmented into 18 ordinary 12-byte-or-smaller control packets with six content bytes each. With the existing 16 ms FSK symbols, its raw tone time is about 61 seconds; conservative speaker queue spacing makes a practical first response roughly 80–90 seconds. A receiver display of “0 remaining” means the last fragment has been queued for playback, not that the sender decoded all 18. The receiver repeats the response with new packet sequence numbers until it sees optical key confirmation; the sender shows its count of decoded fragments. The 52-byte READY confirmation takes nine fragments (about 31 seconds raw; roughly 35–45 seconds queued) and repeats until authenticated optical data arrives. This deliberately does not change the normal 12-byte packet limit or the 14-byte compact ACK format, so runtime ACK latency remains unchanged.
+
+After establishment, each plaintext FEC source block is encrypted once with AES-256-GCM, then Reed–Solomon symbols are generated from the exact ciphertext and tag. Repeated optical display uses cached ciphertext, never another encryption under the same nonce. Recovery therefore reconstructs the original authenticated ciphertext before GCM verification. The GCM IV is `sessionBindingKey[0..5] || blockId:uint32be || 0:uint16be`; block IDs are unique within the fresh per-transfer key. AAD contains protocol version, the full cryptographic session ID, legacy compact transfer ID, block ID, and encrypted-block frame type. Thus public routing headers remain decodable but their block-level meaning is authenticated. Direct optical and QR Compatibility Mode do not use this handshake and retain their prior behavior.
+
+`optical-core` also exposes audited Ed25519 identity generation, signing, and verification helpers for a future IndexedDB-backed TOFU device directory. Persistent identity exchange is deliberately not enabled in this UI revision. To authenticate a peer, users must disable hands-free continuation and manually compare the SAS on every transfer; no identity key is silently trusted. A future UI must store private identity material only in IndexedDB, pin a SAS-confirmed peer public key, and force a fresh SAS warning if that key changes.
 
 The optical manifest carries the archive length, block layout, and SHA-256. The sender repeats manifest block zero until the receiver stores it, then revisits a batch of four incomplete blocks and advances only after their ACKs. Block status uses a compact acoustic packet with the full session ID, sequence, cumulative first-missing block, four nearby receipt bits, a four-bit pacing recommendation, and CRC. A lost status tone is repaired by the next cumulative report. The 16 ms FSK symbols remain unchanged; the synthetic compact packet duration is 2.15 seconds rather than 3.43 seconds for the earlier status format. After 12 seconds without a valid paired frame, the receiver sends PAUSE; reacquisition sends RESUME and incomplete blocks repeat. A new receive session gets a new ID. Acoustic packets contain no file bytes, filename, archive length, or network address. Browser permission rules require a click to start the speaker and microphone. Direct optical retains the previous behavior, and QR Compatibility Mode retains its eight-character key and network control path.
 
@@ -43,8 +91,8 @@ Safari Private Browsing does not provide the origin-private file system. The rec
 To try a local optical file transfer:
 
 1. Open sender and receiver UIs and select **High-Speed Optical** on both. Select **Transfer files** and **Receive files** and match their optical profiles.
-2. For audio pairing, select **Audio pairing + ACK** on both. Click **Start audio handshake + feedback** on the receiver, then **Listen for audio pairing** on the sender. Wait for the same session ID to appear on both devices.
-3. Select a directory on the sender and click **Prepare ZIP**. Aim the camera at the slowly cycling alignment block and select **Full screen** if needed. After sound confirms alignment, the sender tests frame rates for about 15–18 seconds, waits for the receiver's audio selection, and then starts file blocks automatically.
+2. For audio pairing, select **Audio pairing + ACK** and the same optical profile on both devices. Select the sender directory **before** starting. On the receiver, click **Enable receiver speaker** and point its camera at the sender screen. On the sender, click **Start hands-free encrypted transfer**. This starts the microphone, requests full screen, displays the optical offer, and prepares the ZIP locally while the receiver sends its fragmented acoustic response. The response can take roughly 80–90 seconds. Browser microphone, speaker, and camera permissions may still require clicks.
+3. Both devices display a pairing code. By default, hands-free mode continues after three seconds; this encrypts the session but **does not verify the peer's identity against a first-contact MITM**. For authenticated first pairing, turn off **Hands-free code continuation** on both devices before starting, compare the codes, and click **Codes match** on each only if they agree. A code mismatch requires cancellation and a new pairing. The sender automatically starts the ZIP transfer once acoustic READY establishes the session; no **Prepare ZIP** click is needed. Aim the camera at the slowly cycling alignment block. After sound confirms alignment, the sender tests frame rates for about 15–18 seconds, waits for the receiver's audio selection, and then starts file blocks automatically.
 4. The optical frame sequence will rise, but the block number stays within the current four-block batch until the receiver confirms the stored bytes through sound. If the camera loses the frame, the sender pauses and resumes after the receiver reacquires it. The button remains available for manual pause/resume.
 5. When the receiver displays **TRANSFER VERIFIED**, download its ZIP. The sender clears its display and turns off its microphone after hearing completion.
 
