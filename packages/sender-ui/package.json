@@ -1,0 +1,32 @@
+{
+  "name": "sender-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm build && node serve.mjs",
+    "dev:vite": "vite",
+    "build": "tsc && vite build",
+    "serve": "node serve.mjs",
+    "test": "node --experimental-strip-types src/local-archive.test.ts && node --experimental-strip-types src/virtual-zip.test.ts && node --experimental-strip-types src/audio-block-scheduler.test.ts && node --experimental-strip-types src/audio-pace.test.ts && node --experimental-strip-types src/compact-ack.test.ts && node --experimental-strip-types src/shard-order.test.ts",
+    "preview": "vite preview",
+    "lint": "eslint src --ext ts,tsx",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@digitaldefiance/reed-solomon-erasure.wasm": "1.0.2",
+    "@noble/hashes": "2.4.0",
+    "@zip.js/zip.js": "2.18.2",
+    "jszip": "^3.10.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zxing-wasm": "^3.1.4"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

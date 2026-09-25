@@ -1,0 +1,28 @@
+{
+  "name": "qrcopy-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "QR code data transfer monorepo",
+  "scripts": {
+    "install:all": "pnpm install",
+    "dev:sender-ui": "pnpm --filter sender-ui dev",
+    "serve:sender-ui": "pnpm --filter sender-ui serve",
+    "dev:sender-api": "pnpm --filter sender-api dev",
+    "dev:receiver-ui": "pnpm --filter receiver-ui dev",
+    "dev:receiver-api": "pnpm --filter receiver-api dev",
+    "dev": "pnpm run dev:sender-ui && pnpm run dev:sender-api && pnpm run dev:receiver-ui && pnpm run dev:receiver-api",
+    "build:all": "pnpm --parallel run build",
+    "lint": "pnpm --parallel run lint",
+    "test": "pnpm --parallel run test"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "react": "19.2.8",
+      "react-dom": "19.2.8"
+    }
+  }
+}
