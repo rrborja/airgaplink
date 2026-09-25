@@ -1,4 +1,5 @@
 import { ControlType, decodeFskSamples, decodeQuadFskHandshakeSamples, decodeQuadFskSamples, encodeCompactFskPacket, encodeFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, makeBlockStatusPayload, makeCompactStatusPayload, packCompactControlPacket, readBlockStatusPayload, readCompactStatusPayload } from './control.ts'
+import { decodeOctalFskSamples, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket } from './octal-fsk.ts'
 
 const payload = makeBlockStatusPayload(96, 0xf0a20cc3)
 const packet = { type: ControlType.BLOCK_STATUS, transferId: 0x9127ea45, sequence: 44, payload }
@@ -83,4 +84,28 @@ if (adjacentRuntimeDecoded.length !== 2 || adjacentRuntimeDecoded[0].type !== Co
 const corruptedQuadAck = quadCompactSound.slice(); corruptedQuadAck.fill(0, Math.floor(corruptedQuadAck.length * 0.55), Math.floor(corruptedQuadAck.length * 0.75))
 if (decodeQuadFskSamples(corruptedQuadAck, 48000).length) throw new Error('Corrupted four-tone compact ACK passed CRC')
 if (quadCompactSound.length / 48000 !== 1.2 || quadCompactSound.length >= compactSound.length * 0.6) throw new Error('Four-tone compact ACK duration regressed')
-console.log(JSON.stringify({ result: 'ok', bitsPerSecond: Math.round(1 / 0.016), packetSeconds: Number((encoded.length / 48000).toFixed(2)), compactAckSeconds: Number((compactSound.length / 48000).toFixed(2)), quadCompactAckSeconds: Number((quadCompactSound.length / 48000).toFixed(2)) }))
+const octalSound = encodeOctalFskHandshakePacket(fragment, 48000)
+const shiftedOctal = new Float32Array(octalSound.length + 2301)
+shiftedOctal.set(octalSound, 2301)
+for (let index = 0; index < shiftedOctal.length; index += 1) shiftedOctal[index] += (((index * 17) % 31) - 15) * 0.0006
+const octalDecoded = decodeOctalFskSamples(shiftedOctal, 48000)
+if (octalDecoded.length !== 1 || octalDecoded[0].sequence !== fragment.sequence || octalDecoded[0].payload.some((value, index) => value !== fragment.payload[index])) throw new Error('Eight-tone handshake packet failed noisy, offset round trip')
+const octal44100 = decodeOctalFskSamples(encodeOctalFskHandshakePacket(fragment, 44100), 44100)
+if (octal44100.length !== 1 || octal44100[0].sequence !== fragment.sequence) throw new Error('Eight-tone packet failed at 44.1 kHz')
+const octalCompactSound = encodeOctalCompactFskPacket(compactPacket, 48000)
+const octalCompactDecoded = decodeOctalFskSamples(octalCompactSound, 48000)
+const octalCompactStatus = octalCompactDecoded.length === 1 ? readCompactStatusPayload(octalCompactDecoded[0].payload) : null
+if (octalCompactDecoded.length !== 1 || octalCompactDecoded[0].sequence !== compactPacket.sequence || octalCompactStatus?.firstMissing !== 12345 || octalCompactStatus.bitmap !== 0b1010 || octalCompactStatus.paceCode !== 4) throw new Error('Eight-tone compact ACK failed')
+const octalPause = decodeOctalFskSamples(encodeOctalFskPacket(quadPause, 48000), 48000)
+if (octalPause.length !== 1 || octalPause[0].type !== ControlType.PAUSE) throw new Error('Eight-tone normal runtime control failed')
+const adjacentOctal = new Float32Array(octalCompactSound.length + 720 + octalSound.length)
+adjacentOctal.set(octalCompactSound); adjacentOctal.set(octalSound, octalCompactSound.length + 720)
+const adjacentOctalDecoded = decodeOctalFskSamples(adjacentOctal, 48000)
+if (adjacentOctalDecoded.length !== 2 || adjacentOctalDecoded[0].type !== ControlType.BLOCK_STATUS || adjacentOctalDecoded[1].type !== ControlType.HANDSHAKE_FRAGMENT) throw new Error('Adjacent eight-tone compact and normal packets failed')
+if (decodeQuadFskSamples(octalSound, 48000).length || decodeFskSamples(octalSound, 48000).length) throw new Error('Older modem accepted an eight-tone packet')
+const octalWithoutSync = octalSound.slice(); octalWithoutSync.fill(0, 0, Math.round(48000 * 0.04))
+if (decodeOctalFskSamples(octalWithoutSync, 48000).length) throw new Error('Eight-tone packet accepted without marker')
+const octalCorrupted = octalCompactSound.slice(); octalCorrupted.fill(0, Math.floor(octalCorrupted.length * 0.55), Math.floor(octalCorrupted.length * 0.75))
+if (decodeOctalFskSamples(octalCorrupted, 48000).length) throw new Error('Corrupted eight-tone ACK passed CRC')
+if (octalCompactSound.length / 48000 !== 0.784 || octalCompactSound.length >= quadCompactSound.length * 0.7) throw new Error('Eight-tone compact ACK duration regressed')
+console.log(JSON.stringify({ result: 'ok', bitsPerSecond: Math.round(1 / 0.016), packetSeconds: Number((encoded.length / 48000).toFixed(2)), compactAckSeconds: Number((compactSound.length / 48000).toFixed(2)), quadCompactAckSeconds: Number((quadCompactSound.length / 48000).toFixed(2)), octalCompactAckSeconds: Number((octalCompactSound.length / 48000).toFixed(3)) }))

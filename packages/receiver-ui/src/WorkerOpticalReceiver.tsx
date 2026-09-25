@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
 import reedSolomonWasmUrl from '@digitaldefiance/reed-solomon-erasure.wasm/wasm?url'
-import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockCollector, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, aesGcmDecrypt, decodeHandshakeOffer, decodeKeyConfirm, deriveHandshakeMaterial, encodeHandshakeResponse, encodeReadyConfirm, equalBytes, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, makeResponse, opticalBlockAad, opticalNonce, calibrationRates, encodeCompactFskPacket, encodeFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, frameDimensions, isDeterministicPayload, makeBlockStatusPayload, makeCompactStatusPayload, opticalPaceFps, opticalProfileNumber, readCalibrationFrameId, recommendOpticalPaceCode, selectCalibratedPaceCode, unpackOpticalSymbol, unpackTransferManifest, readyConfirm, type ControlPacket, type HandshakeMaterial, type HandshakeOffer, type OpticalImageDecode, type OpticalProfile, type TransferManifest } from '@qrcopy/optical-core'
+import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockCollector, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, aesGcmDecrypt, compactReadyNegotiated, decodeHandshakeOffer, decodeKeyConfirm, deriveHandshakeMaterial, encodeHandshakeResponse, encodeReadyConfirm, encodeReadyConfirmCompact, equalBytes, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeResponse, opticalBlockAad, opticalNonce, calibrationRates, encodeCompactFskPacket, encodeFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, frameDimensions, isDeterministicPayload, makeBlockStatusPayload, makeCompactStatusPayload, opticalPaceFps, opticalProfileNumber, readCalibrationFrameId, recommendOpticalPaceCode, responseToneCount, runtimeToneAllowed, selectCalibratedPaceCode, unpackOpticalSymbol, unpackTransferManifest, readyConfirm, readyConfirmCompact, type AcousticToneCount, type ControlPacket, type HandshakeMaterial, type HandshakeOffer, type OpticalImageDecode, type OpticalProfile, type TransferManifest } from '@qrcopy/optical-core'
 import { LocalOpticalSink } from './local-sink'
 import { IndexedDbOpticalSink } from './indexeddb-sink'
 
@@ -17,8 +17,8 @@ export function WorkerOpticalReceiver() {
   const gridRef = useRef<HTMLCanvasElement>(null)
   const workerRef = useRef<Worker | null>(null)
   const wasmBytes = useRef<Uint8Array | null>(null), recoveryCodec = useRef<ReedSolomonBlockCodec | null>(null), fileState = useRef<FileReceiveState>(emptyFileState())
-  const speaker = useRef<AudioContext | null>(null), speakerTimer = useRef<number | null>(null), completionStopTimer = useRef<number | null>(null), audioSequence = useRef(0), verified = useRef(false), readySent = useRef(false), alignmentSeen = useRef(false), opticalLost = useRef(false), lastOpticalAt = useRef(0), resumeRepeats = useRef(0), completeSignalsSent = useRef(0), nextAudioStart = useRef(0)
-  const handshakeRef = useRef<{ state: ReceiverHandshakeState; offer?: HandshakeOffer; privateKey?: Uint8Array; material?: HandshakeMaterial; responseMessage?: Uint8Array; readyMessage?: Uint8Array; responseRounds: number; readyRounds: number; outgoing: ControlPacket[]; reassembler: AcousticFragmentReassembler }>({ state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() })
+  const speaker = useRef<AudioContext | null>(null), speakerTimer = useRef<number | null>(null), completionStopTimer = useRef<number | null>(null), readyPlaybackTimer = useRef<number | null>(null), audioSequence = useRef(0), verified = useRef(false), readySent = useRef(false), alignmentSeen = useRef(false), opticalLost = useRef(false), lastOpticalAt = useRef(0), resumeRepeats = useRef(0), completeSignalsSent = useRef(0), nextAudioStart = useRef(0)
+  const handshakeRef = useRef<{ state: ReceiverHandshakeState; offer?: HandshakeOffer; responseCapabilities?: number; privateKey?: Uint8Array; material?: HandshakeMaterial; responseMessage?: Uint8Array; readyMessage?: Uint8Array; audioMode?: AcousticToneCount; responseRounds: number; readyRounds: number; outgoing: ControlPacket[]; reassembler: AcousticFragmentReassembler }>({ state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() })
   const fileDecodeStats = useRef({ symbols: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 })
   const fileStarted = useRef(0)
   const pacingCode = useRef(0)
@@ -75,7 +75,7 @@ export function WorkerOpticalReceiver() {
     })()
     return () => { cancelled = true }
   }, [])
-  const stopSpeaker = () => { if (speakerTimer.current !== null) window.clearInterval(speakerTimer.current); speakerTimer.current = null; if (completionStopTimer.current !== null) window.clearTimeout(completionStopTimer.current); completionStopTimer.current = null; void speaker.current?.close(); speaker.current = null; nextAudioStart.current = 0; setSpeakerStatus('Speaker feedback off') }
+  const stopSpeaker = () => { if (speakerTimer.current !== null) window.clearInterval(speakerTimer.current); speakerTimer.current = null; if (completionStopTimer.current !== null) window.clearTimeout(completionStopTimer.current); completionStopTimer.current = null; if (readyPlaybackTimer.current !== null) window.clearTimeout(readyPlaybackTimer.current); readyPlaybackTimer.current = null; void speaker.current?.close(); speaker.current = null; nextAudioStart.current = 0; setSpeakerStatus('Speaker feedback off') }
   useEffect(() => () => stopSpeaker(), [])
   const sendAcousticStatus = () => {
     const context = speaker.current, state = fileState.current, manifest = state.manifest
@@ -129,18 +129,29 @@ export function WorkerOpticalReceiver() {
       if (type === ControlType.READY) readySent.current = true
     }
     const packet = pendingHandshakePacket || { type, transferId, sequence: audioSequence.current++ & 0xffff, payload }
-    const fourToneHandshake = !!pendingHandshakePacket && !!(handshake.offer?.capabilities && (handshake.offer.capabilities & HANDSHAKE_CAPABILITY_QUAD_FSK))
-    const fourToneRuntime = !pendingHandshakePacket && handshake.state === 'ESTABLISHED' && !!(handshake.offer?.capabilities && (handshake.offer.capabilities & HANDSHAKE_CAPABILITY_QUAD_CONTROL))
-    const samples = fourToneHandshake ? encodeQuadFskHandshakePacket(packet, context.sampleRate) : fourToneRuntime ? compact ? encodeQuadCompactFskPacket(packet, context.sampleRate) : encodeQuadFskPacket(packet, context.sampleRate) : compact ? encodeCompactFskPacket(packet, context.sampleRate) : encodeFskPacket(packet, context.sampleRate)
+    const responseFragment = !!pendingHandshakePacket && pendingHandshakePacket.payload[2] === 1
+    const handshakeMode: AcousticToneCount = responseFragment ? responseToneCount(handshake.offer?.capabilities || 0, handshake.responseRounds) : handshake.audioMode || 2
+    const toneCount: AcousticToneCount = pendingHandshakePacket ? handshakeMode : handshake.state === 'ESTABLISHED' ? handshake.audioMode || 2 : 2
+    const samples = toneCount === 8 ? pendingHandshakePacket ? encodeOctalFskHandshakePacket(packet, context.sampleRate) : compact ? encodeOctalCompactFskPacket(packet, context.sampleRate) : encodeOctalFskPacket(packet, context.sampleRate)
+      : toneCount === 4 ? pendingHandshakePacket ? encodeQuadFskHandshakePacket(packet, context.sampleRate) : compact ? encodeQuadCompactFskPacket(packet, context.sampleRate) : encodeQuadFskPacket(packet, context.sampleRate)
+        : compact ? encodeCompactFskPacket(packet, context.sampleRate) : encodeFskPacket(packet, context.sampleRate)
     const buffer = context.createBuffer(1, samples.length, context.sampleRate)
     buffer.copyToChannel(samples, 0)
     const source = context.createBufferSource(); source.buffer = buffer; source.connect(context.destination)
     const start = Math.max(context.currentTime, nextAudioStart.current)
     source.start(start)
-    nextAudioStart.current = start + buffer.duration + (fourToneHandshake || fourToneRuntime ? 0.015 : 0.1)
+    nextAudioStart.current = start + buffer.duration + (toneCount === 2 ? 0.1 : 0.015)
     setAudioPacketsSent(value => value + 1)
-    setSpeakerStatus(type === ControlType.HANDSHAKE_FRAGMENT ? `Sending ${fourToneHandshake ? 'four-tone' : 'two-tone'} secure handshake fragment (${handshake.outgoing.length} remaining)` : type === ControlType.HELLO ? `Sending audio HELLO · session ${transferId.toString(16).padStart(8, '0')}` : type === ControlType.PROFILE_SELECTED ? 'Camera aligned · requesting optical calibration' : type === ControlType.CALIBRATION_SELECTED ? `Calibration selected ${opticalPaceFps(selectedPaceCode.current)} FPS · sending over sound` : type === ControlType.PAUSE ? 'Optical link lost · sending PAUSE over sound' : type === ControlType.RESUME ? 'Optical link reacquired · sending RESUME over sound' : type === ControlType.TRANSFER_COMPLETE ? 'Sending verified-complete tone' : type === ControlType.READY ? 'Optical manifest confirmed; sending compact READY' : compact ? 'Sending compact cumulative block ACK' : 'Sending block bitmap over speaker')
-    if (pendingHandshakePacket && !handshake.outgoing.length && handshake.state === 'SENDING_READY') { handshake.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED'); setSpeakerStatus(sasManuallyVerifiedRef.current ? 'Pairing code manually confirmed · Encrypted · AES-256-GCM' : 'Hands-free pairing · Encrypted · peer identity unverified') }
+    setSpeakerStatus(type === ControlType.HANDSHAKE_FRAGMENT ? `Sending ${toneCount}-tone secure handshake fragment (${handshake.outgoing.length} remaining)` : type === ControlType.HELLO ? `Sending audio HELLO · session ${transferId.toString(16).padStart(8, '0')}` : type === ControlType.PROFILE_SELECTED ? 'Camera aligned · requesting optical calibration' : type === ControlType.CALIBRATION_SELECTED ? `Calibration selected ${opticalPaceFps(selectedPaceCode.current)} FPS · sending over sound` : type === ControlType.PAUSE ? 'Optical link lost · sending PAUSE over sound' : type === ControlType.RESUME ? 'Optical link reacquired · sending RESUME over sound' : type === ControlType.TRANSFER_COMPLETE ? 'Sending verified-complete tone' : type === ControlType.READY ? 'Optical manifest confirmed; sending compact READY' : compact ? `Sending ${toneCount}-tone compact cumulative block ACK` : 'Sending block bitmap over speaker')
+    if (pendingHandshakePacket && !handshake.outgoing.length && handshake.state === 'SENDING_READY') {
+      setSpeakerStatus(`Final ${toneCount}-tone READY queued; waiting for playback to finish…`)
+      readyPlaybackTimer.current = window.setTimeout(() => {
+        readyPlaybackTimer.current = null
+        if (handshakeRef.current !== handshake || handshake.state !== 'SENDING_READY') return
+        handshake.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED')
+        setSpeakerStatus(`${handshake.audioMode || 2}-tone audio established · ${sasManuallyVerifiedRef.current ? 'pairing code manually confirmed' : 'hands-free pairing · peer identity unverified'} · Encrypted · AES-256-GCM`)
+      }, Math.ceil((nextAudioStart.current - context.currentTime) * 1000))
+    }
     if (type === ControlType.TRANSFER_COMPLETE && ++completeSignalsSent.current >= 3) {
       if (speakerTimer.current !== null) window.clearInterval(speakerTimer.current)
       speakerTimer.current = null
@@ -149,13 +160,13 @@ export function WorkerOpticalReceiver() {
   }
   const startSpeaker = async () => {
     if (speaker.current) return
-    try { const context = new AudioContext(); speaker.current = context; await context.resume(); setSpeakerStatus(connectionMode === 'audio' ? 'Speaker ready; waiting for the sender optical offer' : 'Speaker ready; awaiting recovered blocks'); sendAcousticStatus(); speakerTimer.current = window.setInterval(sendAcousticStatus, connectionMode === 'audio' && handshakeRef.current.offer?.capabilities && (handshakeRef.current.offer.capabilities & HANDSHAKE_CAPABILITY_QUAD_FSK) ? 150 : connectionMode === 'audio' ? 2200 : 4400) }
+    try { const context = new AudioContext(); speaker.current = context; await context.resume(); setSpeakerStatus(connectionMode === 'audio' ? 'Speaker ready; waiting for the sender optical offer' : 'Speaker ready; awaiting recovered blocks'); sendAcousticStatus(); speakerTimer.current = window.setInterval(sendAcousticStatus, connectionMode === 'audio' && handshakeRef.current.offer?.capabilities && (handshakeRef.current.offer.capabilities & (HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_QUAD_FSK)) ? 150 : connectionMode === 'audio' ? 2200 : 4400) }
     catch { stopSpeaker(); setSpeakerStatus('Could not start speaker feedback') }
   }
   useEffect(() => {
     if (!speaker.current || connectionMode !== 'audio') return
     if (speakerTimer.current !== null) window.clearInterval(speakerTimer.current)
-    const fast = !!(handshakeRef.current.offer?.capabilities && (handshakeRef.current.offer.capabilities & (handshakeState === 'ESTABLISHED' ? HANDSHAKE_CAPABILITY_QUAD_CONTROL : HANDSHAKE_CAPABILITY_QUAD_FSK))) && handshakeState !== 'CANCELLED' && handshakeState !== 'FAILED'
+    const fast = handshakeState === 'ESTABLISHED' ? (handshakeRef.current.audioMode || 2) > 2 : !!(handshakeRef.current.offer?.capabilities && (handshakeRef.current.offer.capabilities & (HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_QUAD_FSK))) && handshakeState !== 'CANCELLED' && handshakeState !== 'FAILED'
     speakerTimer.current = window.setInterval(sendAcousticStatus, fast ? 150 : 2200)
     return () => { if (speakerTimer.current !== null) window.clearInterval(speakerTimer.current); speakerTimer.current = null }
   }, [connectionMode, handshakeState])
@@ -242,6 +253,7 @@ export function WorkerOpticalReceiver() {
   }, [connectionMode, handsFreePairing, handshakeState])
   const cancelHandshake = () => {
     const handshake = handshakeRef.current
+    if (readyPlaybackTimer.current !== null) window.clearTimeout(readyPlaybackTimer.current); readyPlaybackTimer.current = null
     handshake.privateKey?.fill(0); handshake.material?.keys.opticalEncryptionKey.fill(0); handshake.material?.keys.handshakeConfirmKey.fill(0); handshake.material?.keys.sessionBindingKey.fill(0); handshake.reassembler.clear()
     handshakeRef.current = { state: 'CANCELLED', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() }; sasManuallyVerifiedRef.current = false; setHandshakeState('CANCELLED'); setResponseRounds(0); setSas(null); setSpeakerStatus('Secure pairing cancelled')
   }
@@ -252,8 +264,8 @@ export function WorkerOpticalReceiver() {
       try {
         const compactId = new DataView(offer.sessionId.buffer, offer.sessionId.byteOffset, 4).getUint32(0), receiver = generateEphemeralKeyPair()
         handshake.state = 'GENERATING_RESPONSE'; setHandshakeState('GENERATING_RESPONSE'); audioSessionIdRef.current = compactId; setAudioSessionId(compactId)
-        const response = makeResponse(offer, receiver, opticalProfileNumber(profile), offer.capabilities & (HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL))
-        handshake.offer = offer; handshake.privateKey = receiver.privateKey; handshake.material = deriveHandshakeMaterial(offer, response, receiver.privateKey, 'receiver')
+        const response = makeResponse(offer, receiver, opticalProfileNumber(profile), offer.capabilities & (HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL | HANDSHAKE_CAPABILITY_COMPACT_READY))
+        handshake.offer = offer; handshake.responseCapabilities = response.capabilities; handshake.privateKey = receiver.privateKey; handshake.material = deriveHandshakeMaterial(offer, response, receiver.privateKey, 'receiver')
         handshake.responseMessage = encodeHandshakeResponse(response)
         handshake.outgoing = fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 1, handshake.responseMessage); audioSequence.current = (audioSequence.current + handshake.outgoing.length) & 0xffff
         handshake.responseRounds = 1; setResponseRounds(1)
@@ -263,12 +275,21 @@ export function WorkerOpticalReceiver() {
       return true
     }
     const confirm = decodeKeyConfirm(payload)
-    if (confirm && connectionMode === 'audio' && handshake.state === 'WAITING_FOR_KEY_CONFIRM' && handshake.offer && handshake.material && equalBytes(confirm.sessionId, handshake.offer.sessionId) && equalBytes(confirm.confirmation, keyConfirm(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))) {
+    const confirmedMode: AcousticToneCount = confirm?.toneCount || (handshake.offer?.capabilities && (handshake.offer.capabilities & HANDSHAKE_CAPABILITY_QUAD_CONTROL) ? 4 : 2)
+    const modeAllowed = runtimeToneAllowed(handshake.offer?.capabilities || 0, confirmedMode)
+    if (confirm && connectionMode === 'audio' && handshake.state === 'WAITING_FOR_KEY_CONFIRM' && handshake.offer && handshake.material && modeAllowed && equalBytes(confirm.sessionId, handshake.offer.sessionId) && equalBytes(confirm.confirmation, confirm.toneCount ? keyConfirmAudioMode(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash, confirm.toneCount) : keyConfirm(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))) {
+      handshake.audioMode = confirmedMode
       const compactId = new DataView(handshake.offer.sessionId.buffer, handshake.offer.sessionId.byteOffset, 4).getUint32(0)
-      handshake.readyMessage = encodeReadyConfirm(handshake.offer.sessionId, readyConfirm(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))
+      handshake.readyMessage = confirmedMode === 8 && compactReadyNegotiated(handshake.offer.capabilities, handshake.responseCapabilities || 0)
+        ? encodeReadyConfirmCompact(handshake.offer.sessionId, readyConfirmCompact(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))
+        : encodeReadyConfirm(handshake.offer.sessionId, readyConfirm(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))
       handshake.outgoing = fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 2, handshake.readyMessage); audioSequence.current = (audioSequence.current + handshake.outgoing.length) & 0xffff
       handshake.readyRounds = 1; handshake.responseMessage = undefined
-      handshake.state = 'SENDING_READY'; setHandshakeState('SENDING_READY'); setFileStatus('Sender key confirmed. Sending receiver confirmation…'); sendAcousticStatus()
+      handshake.state = 'SENDING_READY'; setHandshakeState('SENDING_READY'); setFileStatus(`Sender key confirmed. Sending ${confirmedMode}-tone receiver confirmation…`); sendAcousticStatus()
+      return true
+    }
+    if (confirm && connectionMode === 'audio' && handshake.state === 'WAITING_FOR_KEY_CONFIRM') {
+      setFileStatus('Optical key confirmation rejected: session, audio mode, or authentication mismatch')
       return true
     }
     return false

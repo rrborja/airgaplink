@@ -1,4 +1,4 @@
-import { AcousticFragmentReassembler, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OpticalBlockEncryptor, aesGcmDecrypt, aesGcmEncrypt, canonicalTranscript, decodeFskSamples, decodeQuadFskHandshakeSamples, decodeHandshakeResponse, deriveHandshakeMaterial, encodeFskPacket, encodeQuadFskHandshakePacket, encodeHandshakeResponse, encodeReadyConfirm, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, makeOffer, makeResponse, opticalNonce, readyConfirm, signIdentity, verifyIdentity, x25519SharedSecret, generateIdentityKeyPair, equalBytes } from './index.ts'
+import { AcousticFragmentReassembler, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OpticalBlockEncryptor, aesGcmDecrypt, aesGcmEncrypt, canonicalTranscript, compactReadyNegotiated, decodeFskSamples, decodeOctalFskSamples, decodeOpticalCells, decodeQuadFskHandshakeSamples, decodeHandshakeResponse, decodeKeyConfirm, decodeReadyConfirm, deriveHandshakeMaterial, encodeFskPacket, encodeOctalFskHandshakePacket, encodeOpticalFrame, encodeQuadFskHandshakePacket, encodeHandshakeResponse, encodeKeyConfirmAudioMode, encodeReadyConfirm, encodeReadyConfirmCompact, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeOffer, makeResponse, opticalNonce, readyConfirm, readyConfirmCompact, responseToneCount, runtimeToneAllowed, runtimeToneCount, signIdentity, verifyIdentity, verifyReadyConfirm, x25519SharedSecret, generateIdentityKeyPair, equalBytes } from './index.ts'
 
 const sender = generateEphemeralKeyPair(), receiver = generateEphemeralKeyPair(), another = generateEphemeralKeyPair()
 const sharedSender = x25519SharedSecret(sender.privateKey, receiver.publicKey), sharedReceiver = x25519SharedSecret(receiver.privateKey, sender.publicKey)
@@ -36,6 +36,76 @@ if (oldReceiverResponse.capabilities & HANDSHAKE_CAPABILITY_QUAD_CONTROL) throw 
 let unadvertisedAccepted = false
 try { deriveHandshakeMaterial(fastOffer, makeResponse(fastOffer, receiver, 1, HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL), sender.privateKey); unadvertisedAccepted = true } catch { /* expected */ }
 if (unadvertisedAccepted) throw new Error('Unadvertised runtime four-tone capability was accepted')
+const octalOffer = makeOffer(sender, HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL | HANDSHAKE_CAPABILITY_COMPACT_READY)
+const octalResponse = makeResponse(octalOffer, receiver, 1, octalOffer.capabilities)
+if (!compactReadyNegotiated(octalOffer.capabilities, octalResponse.capabilities)) throw new Error('Both current peers failed to negotiate compact READY')
+const oldEightToneCapabilities = HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL
+const oldEightToneOffer = makeOffer(sender, oldEightToneCapabilities), oldEightToneResponse = makeResponse(oldEightToneOffer, receiver, 1, oldEightToneCapabilities)
+const oldReceiverCapabilities = octalOffer.capabilities & ~HANDSHAKE_CAPABILITY_COMPACT_READY
+if (compactReadyNegotiated(oldEightToneOffer.capabilities, oldEightToneResponse.capabilities) || compactReadyNegotiated(octalOffer.capabilities, oldReceiverCapabilities)) throw new Error('Compact READY was inferred from eight-tone capability alone')
+const oldEightToneMaterial = deriveHandshakeMaterial(oldEightToneOffer, oldEightToneResponse, sender.privateKey)
+const oldEightToneReady = decodeReadyConfirm(encodeReadyConfirm(oldEightToneOffer.sessionId, readyConfirm(oldEightToneMaterial.keys.handshakeConfirmKey, oldEightToneMaterial.transcriptHash)))
+if (!oldEightToneReady || oldEightToneReady.compact || !verifyReadyConfirm(oldEightToneOffer.sessionId, oldEightToneMaterial.keys.handshakeConfirmKey, oldEightToneMaterial.transcriptHash, oldEightToneReady)) throw new Error('Older eight-tone peer cannot establish with full READY')
+const newSenderOldReceiver = makeResponse(octalOffer, receiver, 1, oldReceiverCapabilities)
+const newSenderOldReceiverMaterial = deriveHandshakeMaterial(octalOffer, newSenderOldReceiver, sender.privateKey)
+const newSenderOldReceiverReady = decodeReadyConfirm(encodeReadyConfirm(octalOffer.sessionId, readyConfirm(newSenderOldReceiverMaterial.keys.handshakeConfirmKey, newSenderOldReceiverMaterial.transcriptHash)))
+if (!newSenderOldReceiverReady || newSenderOldReceiverReady.compact || !verifyReadyConfirm(octalOffer.sessionId, newSenderOldReceiverMaterial.keys.handshakeConfirmKey, newSenderOldReceiverMaterial.transcriptHash, newSenderOldReceiverReady)) throw new Error('New sender rejected full READY from older eight-tone receiver')
+if (responseToneCount(octalOffer.capabilities, 1) !== 8 || responseToneCount(octalOffer.capabilities, 2) !== 8 || responseToneCount(octalOffer.capabilities, 100) !== 8 || responseToneCount(fastOffer.capabilities, 1) !== 4 || responseToneCount(fastOffer.capabilities, 2) !== 4 || responseToneCount(0, 100) !== 2) throw new Error('Negotiated tone count changed on retry')
+if (runtimeToneCount(octalResponse.capabilities, 8) !== 8 || runtimeToneCount(oldReceiverResponse.capabilities, 8) !== 2 || runtimeToneAllowed(octalResponse.capabilities, 4) || runtimeToneAllowed(octalResponse.capabilities, 2) || !runtimeToneAllowed(octalResponse.capabilities, 8) || runtimeToneAllowed(fastResponse.capabilities, 8)) throw new Error('Eight-tone session was not locked through runtime control')
+let downgradedEightTone = false
+try { runtimeToneCount(octalResponse.capabilities, 4); downgradedEightTone = true } catch { /* expected */ }
+if (downgradedEightTone) throw new Error('Eight-tone session silently downgraded')
+const octalMaterial = deriveHandshakeMaterial(octalOffer, octalResponse, sender.privateKey)
+if (!equalBytes(octalMaterial.keys.opticalEncryptionKey, deriveHandshakeMaterial(octalOffer, octalResponse, receiver.privateKey, 'receiver').keys.opticalEncryptionKey)) throw new Error('Eight-tone negotiation changed session keys')
+const octalMessage = encodeHandshakeResponse(octalResponse), octalPackets = fragmentHandshakeMessage(0x1234, 200, 0xaabbccdd, 1, octalMessage), octalAssembly = new AcousticFragmentReassembler()
+let octalRebuilt: Uint8Array | null = null
+for (const packet of octalPackets) {
+  const decoded = decodeOctalFskSamples(encodeOctalFskHandshakePacket(packet, 48000), 48000)
+  if (decoded.length !== 1) throw new Error('Eight-tone fragmented response failed acoustic decode')
+  const result = octalAssembly.add(decoded[0])
+  if (result) octalRebuilt = result.message
+}
+if (!octalRebuilt || !equalBytes(octalRebuilt, octalMessage)) throw new Error('Eight-tone response did not reassemble')
+const octalRetryAssembly = new AcousticFragmentReassembler()
+let octalRetryRebuilt: Uint8Array | null = null
+for (const [index, packet] of octalPackets.entries()) if (index !== 3 && index !== 11) octalRetryAssembly.add(decodeOctalFskSamples(encodeOctalFskHandshakePacket(packet, 48000), 48000)[0], 1_000 + index * 1_300)
+const octalRetryPackets = fragmentHandshakeMessage(0x1234, 300, 0xaabbccdd, 1, octalMessage)
+for (const [index, packet] of octalRetryPackets.entries()) {
+  if (responseToneCount(octalOffer.capabilities, 2) !== 8) throw new Error('Eight-tone retry changed physical mode')
+  const decoded = decodeOctalFskSamples(encodeOctalFskHandshakePacket(packet, 48000), 48000)
+  if (decoded.length !== 1) throw new Error('Eight-tone retry packet failed')
+  const result = octalRetryAssembly.add(decoded[0], 25_000 + index * 1_300)
+  if (result) octalRetryRebuilt = result.message
+}
+if (!octalRetryRebuilt || !equalBytes(octalRetryRebuilt, octalMessage)) throw new Error('Missing response fragments were not repaired by an eight-tone retry')
+const octalResponseSeconds = octalPackets.reduce((seconds, packet) => seconds + encodeOctalFskHandshakePacket(packet, 48000).length / 48000 + 0.015, 0)
+if (octalResponseSeconds >= 25) throw new Error('Eight-tone response duration did not improve enough')
+const octalReadyMessage = encodeReadyConfirmCompact(octalOffer.sessionId, readyConfirmCompact(octalMaterial.keys.handshakeConfirmKey, octalMaterial.transcriptHash))
+const octalReadyPackets = fragmentHandshakeMessage(0x1234, 250, 0xaabbccdd, 2, octalReadyMessage)
+const octalReadySeconds = octalReadyPackets.reduce((seconds, packet) => seconds + encodeOctalFskHandshakePacket(packet, 48000).length / 48000 + 0.015, 0)
+if (octalReadyPackets.length !== 4 || octalReadySeconds >= 5.5) throw new Error('Eight-tone READY duration regressed')
+const audioConfirmation = encodeKeyConfirmAudioMode(octalOffer.sessionId, 8, keyConfirmAudioMode(octalMaterial.keys.handshakeConfirmKey, octalMaterial.transcriptHash, 8))
+const opticalConfirmationFrame = decodeOpticalCells(encodeOpticalFrame(audioConfirmation, 1, 0, DEBUG_PROFILE).cells, DEBUG_PROFILE)
+if (!opticalConfirmationFrame.ok || !equalBytes(opticalConfirmationFrame.payload, audioConfirmation)) throw new Error('Eight-tone key confirmation failed optical transport')
+const decodedAudioConfirmation = decodeKeyConfirm(opticalConfirmationFrame.payload)
+if (!decodedAudioConfirmation || decodedAudioConfirmation.toneCount !== 8 || !equalBytes(decodedAudioConfirmation.confirmation, keyConfirmAudioMode(octalMaterial.keys.handshakeConfirmKey, octalMaterial.transcriptHash, 8))) throw new Error('Authenticated optical audio-mode selection failed')
+const octalReadyAssembly = new AcousticFragmentReassembler()
+let octalReadyRebuilt: Uint8Array | null = null
+for (const packet of octalReadyPackets) {
+  const decoded = decodeOctalFskSamples(encodeOctalFskHandshakePacket(packet, 48000), 48000)
+  if (decoded.length !== 1) throw new Error('Eight-tone READY packet failed acoustic decode')
+  const result = octalReadyAssembly.add(decoded[0])
+  if (result) octalReadyRebuilt = result.message
+}
+const establishedReady = octalReadyRebuilt ? decodeReadyConfirm(octalReadyRebuilt) : null
+if (!establishedReady?.compact || !verifyReadyConfirm(octalOffer.sessionId, octalMaterial.keys.handshakeConfirmKey, octalMaterial.transcriptHash, establishedReady)) throw new Error('Eight-tone READY did not establish the session')
+const tamperedReady = octalReadyMessage.slice(); tamperedReady[23] ^= 1
+if (verifyReadyConfirm(octalOffer.sessionId, octalMaterial.keys.handshakeConfirmKey, octalMaterial.transcriptHash, decodeReadyConfirm(tamperedReady))) throw new Error('Modified compact READY authenticated')
+if (verifyReadyConfirm(differentSessionOffer.sessionId, octalMaterial.keys.handshakeConfirmKey, octalMaterial.transcriptHash, establishedReady)) throw new Error('Compact READY accepted another session')
+if (verifyReadyConfirm(octalOffer.sessionId, senderMaterial.keys.handshakeConfirmKey, octalMaterial.transcriptHash, establishedReady) || verifyReadyConfirm(octalOffer.sessionId, octalMaterial.keys.handshakeConfirmKey, senderMaterial.transcriptHash, establishedReady)) throw new Error('Compact READY accepted another key or transcript')
+const tamperedAudioConfirmation = audioConfirmation.slice(); tamperedAudioConfirmation[20] = 4
+const tamperedAudio = decodeKeyConfirm(tamperedAudioConfirmation)
+if (!tamperedAudio || equalBytes(tamperedAudio.confirmation, keyConfirmAudioMode(octalMaterial.keys.handshakeConfirmKey, octalMaterial.transcriptHash, tamperedAudio.toneCount!))) throw new Error('Modified audio-mode selection authenticated')
 const fastMessage = encodeHandshakeResponse(fastResponse), fastPackets = fragmentHandshakeMessage(0x1234, 30, 0xaabbccdd, 1, fastMessage), fastAssembly = new AcousticFragmentReassembler()
 let fastRebuilt: Uint8Array | null = null
 for (const packet of fastPackets) {
@@ -47,9 +117,11 @@ for (const packet of fastPackets) {
 }
 if (!fastRebuilt || !equalBytes(fastRebuilt, fastMessage)) throw new Error('Four-tone fragmented response failed reassembly')
 const readyMessage = encodeReadyConfirm(fastOffer.sessionId, readyConfirm(deriveHandshakeMaterial(fastOffer, fastResponse, sender.privateKey).keys.handshakeConfirmKey, deriveHandshakeMaterial(fastOffer, fastResponse, sender.privateKey).transcriptHash))
+if (!verifyReadyConfirm(fastOffer.sessionId, deriveHandshakeMaterial(fastOffer, fastResponse, sender.privateKey).keys.handshakeConfirmKey, deriveHandshakeMaterial(fastOffer, fastResponse, sender.privateKey).transcriptHash, decodeReadyConfirm(readyMessage))) throw new Error('Legacy full-length READY verification regressed')
 const fastReadyPackets = fragmentHandshakeMessage(0x1234, 60, 0xaabbccdd, 2, readyMessage)
 const fastResponseSeconds = fastPackets.reduce((seconds, packet) => seconds + encodeQuadFskHandshakePacket(packet, 48000).length / 48000 + 0.015, 0)
 const fastReadySeconds = fastReadyPackets.reduce((seconds, packet) => seconds + encodeQuadFskHandshakePacket(packet, 48000).length / 48000 + 0.015, 0)
+if (octalResponseSeconds >= fastResponseSeconds * 0.72) throw new Error('Eight-tone response did not materially improve on four-tone audio')
 if (fastPackets.length !== 18 || fastReadyPackets.length !== 9 || fastResponseSeconds + fastReadySeconds > 55) throw new Error('Four-tone handshake duration regressed')
 const duplicates = new AcousticFragmentReassembler(); for (const packet of packets) { duplicates.add(packet); duplicates.add(packet) }
 const mixed = new AcousticFragmentReassembler(); for (const packet of packets.slice(0, -1)) mixed.add(packet); const foreign = packets.at(-1)!; foreign.payload[0] ^= 1; if (mixed.add(foreign)) throw new Error('Mixed session fragments combined')
@@ -89,4 +161,4 @@ const receiverSas = deriveHandshakeMaterial(receiverSideOffer, receiverSideRespo
 if (senderSas === receiverSas) throw new Error('MITM substitution did not alter SAS')
 const identity = generateIdentityKeyPair(), signature = signIdentity(identity.privateKey, senderMaterial.transcriptHash)
 if (!verifyIdentity(identity.publicKey, senderMaterial.transcriptHash, signature) || verifyIdentity(another.publicKey, senderMaterial.transcriptHash, signature)) throw new Error('Persistent identity substitution was not rejected')
-console.log(JSON.stringify({ result: 'ok', fragments: packets.length, sas: senderMaterial.sas, fourToneResponseSeconds: Number(fastResponseSeconds.toFixed(2)), fourToneReadySeconds: Number(fastReadySeconds.toFixed(2)) }))
+console.log(JSON.stringify({ result: 'ok', fragments: packets.length, sas: senderMaterial.sas, fourToneResponseSeconds: Number(fastResponseSeconds.toFixed(2)), fourToneReadySeconds: Number(fastReadySeconds.toFixed(2)), eightToneResponseSeconds: Number(octalResponseSeconds.toFixed(2)), eightToneReadySeconds: Number(octalReadySeconds.toFixed(2)) }))
