@@ -7,12 +7,18 @@ const CONTROL_MAGIC = 0xa55a
 const CONTROL_VERSION = 1
 const PREAMBLE = Uint8Array.of(0x55, 0x55, 0x55, 0x55, 0xd3)
 const COMPACT_PREAMBLE = Uint8Array.of(0xd5, 0x3a)
+const QUAD_PREAMBLE = Uint8Array.of(0xd2, 0xa9, 0x6c, 0x35)
 const COMPACT_MAGIC = 0xc7
 const COMPACT_BYTES = 14
 export const CONTROL_MAX_PAYLOAD = 12
 export const FSK_SYMBOL_SECONDS = 0.016
 export const FSK_ZERO_HZ = 1700
 export const FSK_ONE_HZ = 2300
+export const QUAD_FSK_TONES_HZ = [1300, 1700, 2100, 2500] as const
+export const QUAD_FSK_SYNC_HZ = 3100
+const QUAD_SYNC_SYMBOLS = 2
+// Gray order: neighboring tones differ by one data bit.
+const QUAD_GRAY_MAP = [0, 1, 3, 2] as const
 
 function crc16(bytes: Uint8Array) {
   let crc = 0xffff
@@ -110,6 +116,38 @@ export function encodeCompactFskPacket(packet: ControlPacket, sampleRate = 48000
   return encodeFskBytes(data, sampleRate)
 }
 
+/** The fifth, 32 ms tone marks the packet boundary. The bytes that follow
+ * are exactly the existing normal or compact CRC16-protected packet body. */
+function encodeQuadFskBody(body: Uint8Array, sampleRate: number) {
+  const bytes = new Uint8Array(QUAD_PREAMBLE.length + body.length)
+  bytes.set(QUAD_PREAMBLE); bytes.set(body, QUAD_PREAMBLE.length)
+  const symbolSamples = Math.round(sampleRate * FSK_SYMBOL_SECONDS), edgeSilence = Math.round(sampleRate * 0.008)
+  const syncSamples = QUAD_SYNC_SYMBOLS * symbolSamples
+  const output = new Float32Array(2 * edgeSilence + syncSamples + bytes.length * 4 * symbolSamples)
+  let phase = 0
+  const tone = (start: number, length: number, frequency: number) => {
+    const increment = 2 * Math.PI * frequency / sampleRate
+    for (let index = 0; index < length; index += 1) {
+      const edge = Math.min(1, index / 24, (length - index - 1) / 24)
+      output[start + index] = Math.sin(phase) * 0.42 * Math.max(0, edge)
+      phase += increment
+    }
+  }
+  tone(edgeSilence, syncSamples, QUAD_FSK_SYNC_HZ)
+  let position = edgeSilence + syncSamples
+  for (const byte of bytes) for (let shift = 6; shift >= 0; shift -= 2) {
+    tone(position, symbolSamples, QUAD_FSK_TONES_HZ[QUAD_GRAY_MAP[(byte >>> shift) & 3]])
+    position += symbolSamples
+  }
+  return output
+}
+export function encodeQuadFskPacket(packet: ControlPacket, sampleRate = 48000) { return encodeQuadFskBody(packControlPacket(packet), sampleRate) }
+export function encodeQuadCompactFskPacket(packet: ControlPacket, sampleRate = 48000) { return encodeQuadFskBody(packCompactControlPacket(packet), sampleRate) }
+export function encodeQuadFskHandshakePacket(packet: ControlPacket, sampleRate = 48000) {
+  if (packet.type !== ControlType.HANDSHAKE_FRAGMENT) throw new Error('Four-tone handshake encoder requires a fragment')
+  return encodeQuadFskPacket(packet, sampleRate)
+}
+
 function toneEnergy(samples: Float32Array, start: number, length: number, frequency: number, sampleRate: number) {
   const omega = 2 * Math.PI * frequency / sampleRate, coefficient = 2 * Math.cos(omega)
   let previous = 0, beforePrevious = 0
@@ -119,6 +157,52 @@ function toneEnergy(samples: Float32Array, start: number, length: number, freque
   }
   return previous * previous + beforePrevious * beforePrevious - coefficient * previous * beforePrevious
 }
+
+/** Decode the fifth-tone marker and four-tone payload while preserving the
+ * legacy two-tone decoder and exact 14-byte compact packet structure. */
+export function decodeQuadFskSamples(samples: Float32Array, sampleRate: number): ControlPacket[] {
+  const symbolSamples = Math.round(sampleRate * FSK_SYMBOL_SECONDS), preambleSymbols: number[] = []
+  for (const byte of QUAD_PREAMBLE) for (let shift = 6; shift >= 0; shift -= 2) preambleSymbols.push((byte >>> shift) & 3)
+  const found = new Map<string, { packet: ControlPacket; position: number }>()
+  for (let phase = 0; phase < symbolSamples; phase += Math.max(1, Math.floor(symbolSamples / 8))) {
+    const count = Math.floor((samples.length - phase) / symbolSamples)
+    if (count < QUAD_SYNC_SYMBOLS + preambleSymbols.length + 13 * 4) continue
+    const symbols = new Uint8Array(count)
+    for (let index = 0; index < count; index += 1) {
+      const start = phase + index * symbolSamples
+      let best = 0, bestEnergy = -1
+      for (let tone = 0; tone < QUAD_FSK_TONES_HZ.length; tone += 1) {
+        const energy = toneEnergy(samples, start, symbolSamples, QUAD_FSK_TONES_HZ[tone], sampleRate)
+        if (energy > bestEnergy) { bestEnergy = energy; best = tone }
+      }
+      symbols[index] = QUAD_GRAY_MAP[best]
+    }
+    const byteAt = (start: number, index: number) => {
+      const offset = start + index * 4
+      return (symbols[offset] << 6) | (symbols[offset + 1] << 4) | (symbols[offset + 2] << 2) | symbols[offset + 3]
+    }
+    for (let offset = QUAD_SYNC_SYMBOLS; offset + preambleSymbols.length + 13 * 4 <= count; offset += 1) {
+      if (preambleSymbols.some((value, index) => symbols[offset + index] !== value)) continue
+      const syncStart = phase + (offset - QUAD_SYNC_SYMBOLS) * symbolSamples
+      const syncLength = QUAD_SYNC_SYMBOLS * symbolSamples
+      const syncEnergy = toneEnergy(samples, syncStart, syncLength, QUAD_FSK_SYNC_HZ, sampleRate)
+      let dataEnergy = 0
+      for (const frequency of QUAD_FSK_TONES_HZ) dataEnergy = Math.max(dataEnergy, toneEnergy(samples, syncStart, syncLength, frequency, sampleRate))
+      if (syncEnergy <= dataEnergy * 3 || syncEnergy <= 0) continue
+      const bodyStart = offset + preambleSymbols.length, compact = byteAt(bodyStart, 0) === COMPACT_MAGIC
+      const payloadLength = compact ? 0 : byteAt(bodyStart, 10), bodyLength = compact ? COMPACT_BYTES : 13 + payloadLength
+      if (payloadLength > CONTROL_MAX_PAYLOAD || bodyStart + bodyLength * 4 > count) continue
+      const body = new Uint8Array(bodyLength)
+      for (let index = 0; index < bodyLength; index += 1) body[index] = byteAt(bodyStart, index)
+      const packet = compact ? unpackCompactControlPacket(body) : unpackControlPacket(body)
+      if (!packet) continue
+      const key = `${packet.transferId}:${packet.sequence}:${packet.type}`, position = syncStart
+      if (!found.has(key) || position < found.get(key)!.position) found.set(key, { packet, position })
+    }
+  }
+  return [...found.values()].sort((left, right) => left.position - right.position).map(item => item.packet)
+}
+export function decodeQuadFskHandshakeSamples(samples: Float32Array, sampleRate: number) { return decodeQuadFskSamples(samples, sampleRate).filter(packet => packet.type === ControlType.HANDSHAKE_FRAGMENT) }
 
 /** Search several clock phases; CRC prevents noise from becoming a control event. */
 export function decodeFskSamples(samples: Float32Array, sampleRate: number): ControlPacket[] {

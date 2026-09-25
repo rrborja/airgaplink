@@ -1,4 +1,4 @@
-import { ControlType, decodeFskSamples, encodeCompactFskPacket, encodeFskPacket, makeBlockStatusPayload, makeCompactStatusPayload, readBlockStatusPayload, readCompactStatusPayload } from './control.ts'
+import { ControlType, decodeFskSamples, decodeQuadFskHandshakeSamples, decodeQuadFskSamples, encodeCompactFskPacket, encodeFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, makeBlockStatusPayload, makeCompactStatusPayload, packCompactControlPacket, readBlockStatusPayload, readCompactStatusPayload } from './control.ts'
 
 const payload = makeBlockStatusPayload(96, 0xf0a20cc3)
 const packet = { type: ControlType.BLOCK_STATUS, transferId: 0x9127ea45, sequence: 44, payload }
@@ -43,4 +43,44 @@ for (const [index, type] of [ControlType.PROFILE_SELECTED, ControlType.PAUSE, Co
 const corrupted = samples.slice()
 corrupted.fill(0, Math.floor(corrupted.length / 2), Math.floor(corrupted.length / 2) + 48000)
 if (decodeFskSamples(corrupted, 48000).length) throw new Error('Corrupted acoustic control passed CRC')
-console.log(JSON.stringify({ result: 'ok', bitsPerSecond: Math.round(1 / 0.016), packetSeconds: Number((encoded.length / 48000).toFixed(2)), compactAckSeconds: Number((compactSound.length / 48000).toFixed(2)) }))
+const fragment = { type: ControlType.HANDSHAKE_FRAGMENT, transferId: sessionId, sequence: 77, payload: Uint8Array.from({ length: 12 }, (_, index) => index * 17 & 255) }
+const quadSound = encodeQuadFskHandshakePacket(fragment, 48000)
+const shiftedQuad = new Float32Array(quadSound.length + 2301)
+shiftedQuad.set(quadSound, 2301)
+for (let index = 0; index < shiftedQuad.length; index += 1) shiftedQuad[index] += (((index * 17) % 31) - 15) * 0.0006
+const quadDecoded = decodeQuadFskHandshakeSamples(shiftedQuad, 48000)
+if (quadDecoded.length !== 1 || quadDecoded[0].transferId !== sessionId || quadDecoded[0].sequence !== 77 || quadDecoded[0].payload.some((value, index) => value !== fragment.payload[index])) throw new Error('Four-tone handshake packet failed noisy, offset round trip')
+const withoutSync = quadSound.slice(); withoutSync.fill(0, 0, Math.round(48000 * 0.04))
+if (decodeQuadFskHandshakeSamples(withoutSync, 48000).length) throw new Error('Four-tone packet was accepted without its unique sync tone')
+const corruptedQuad = quadSound.slice(); corruptedQuad.fill(0, Math.floor(corruptedQuad.length * 0.55), Math.floor(corruptedQuad.length * 0.75))
+if (decodeQuadFskHandshakeSamples(corruptedQuad, 48000).length) throw new Error('Corrupted four-tone packet passed CRC')
+const quad44100 = decodeQuadFskHandshakeSamples(encodeQuadFskHandshakePacket(fragment, 44100), 44100)
+if (quad44100.length !== 1 || quad44100[0].sequence !== 77) throw new Error('Four-tone packet failed at 44.1 kHz')
+const nextFragmentSound = encodeQuadFskHandshakePacket({ ...fragment, sequence: 78 }, 48000)
+const adjacentQuad = new Float32Array(quadSound.length + 720 + nextFragmentSound.length)
+adjacentQuad.set(quadSound); adjacentQuad.set(nextFragmentSound, quadSound.length + 720)
+const adjacentDecoded = decodeQuadFskHandshakeSamples(adjacentQuad, 48000)
+if (adjacentDecoded.length !== 2 || adjacentDecoded[0].sequence !== 77 || adjacentDecoded[1].sequence !== 78) throw new Error('Four-tone packet-start marker failed on adjacent fragments')
+if (quadSound.length >= encodeFskPacket(fragment, 48000).length * 0.6) throw new Error('Four-tone handshake did not shorten the acoustic waveform')
+let rejectedRuntimeQuad = false
+try { encodeQuadFskHandshakePacket(compactPacket, 48000) } catch { rejectedRuntimeQuad = true }
+if (!rejectedRuntimeQuad) throw new Error('Four-tone handshake codec accepted a runtime ACK')
+const quadCompactSound = encodeQuadCompactFskPacket(compactPacket, 48000)
+const quadCompactDecoded = decodeQuadFskSamples(quadCompactSound, 48000)
+const quadCompactStatus = quadCompactDecoded.length === 1 ? readCompactStatusPayload(quadCompactDecoded[0].payload) : null
+if (packCompactControlPacket(compactPacket).length !== 14 || quadCompactDecoded.length !== 1 || quadCompactDecoded[0].sequence !== compactPacket.sequence || quadCompactStatus?.firstMissing !== 12345 || quadCompactStatus.bitmap !== 0b1010 || quadCompactStatus.paceCode !== 4) throw new Error('Four-tone compact ACK changed the 14-byte body or decoded incorrectly')
+if (decodeFskSamples(quadCompactSound, 48000).length) throw new Error('Legacy binary decoder accepted a four-tone ACK')
+const emptyRuntime = { type: ControlType.TRANSFER_COMPLETE, transferId: sessionId, sequence: 15, payload: new Uint8Array() }
+const quadEmptyRuntime = decodeQuadFskSamples(encodeQuadFskPacket(emptyRuntime, 48000), 48000)
+if (quadEmptyRuntime.length !== 1 || quadEmptyRuntime[0].type !== ControlType.TRANSFER_COMPLETE) throw new Error('Four-tone normal packet with empty payload failed')
+const quadPause = { type: ControlType.PAUSE, transferId: sessionId, sequence: 16, payload: linkPayload }
+const quadPauseDecoded = decodeQuadFskSamples(encodeQuadFskPacket(quadPause, 48000), 48000)
+if (quadPauseDecoded.length !== 1 || quadPauseDecoded[0].type !== ControlType.PAUSE || quadPauseDecoded[0].payload[1] !== 1) throw new Error('Four-tone runtime link packet failed')
+const adjacentRuntime = new Float32Array(quadCompactSound.length + 720 + encodeQuadFskPacket(quadPause, 48000).length)
+adjacentRuntime.set(quadCompactSound); adjacentRuntime.set(encodeQuadFskPacket(quadPause, 48000), quadCompactSound.length + 720)
+const adjacentRuntimeDecoded = decodeQuadFskSamples(adjacentRuntime, 48000)
+if (adjacentRuntimeDecoded.length !== 2 || adjacentRuntimeDecoded[0].type !== ControlType.BLOCK_STATUS || adjacentRuntimeDecoded[1].type !== ControlType.PAUSE) throw new Error('Adjacent mixed compact and normal four-tone control failed')
+const corruptedQuadAck = quadCompactSound.slice(); corruptedQuadAck.fill(0, Math.floor(corruptedQuadAck.length * 0.55), Math.floor(corruptedQuadAck.length * 0.75))
+if (decodeQuadFskSamples(corruptedQuadAck, 48000).length) throw new Error('Corrupted four-tone compact ACK passed CRC')
+if (quadCompactSound.length / 48000 !== 1.2 || quadCompactSound.length >= compactSound.length * 0.6) throw new Error('Four-tone compact ACK duration regressed')
+console.log(JSON.stringify({ result: 'ok', bitsPerSecond: Math.round(1 / 0.016), packetSeconds: Number((encoded.length / 48000).toFixed(2)), compactAckSeconds: Number((compactSound.length / 48000).toFixed(2)), quadCompactAckSeconds: Number((quadCompactSound.length / 48000).toFixed(2)) }))

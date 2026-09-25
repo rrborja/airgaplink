@@ -1,4 +1,4 @@
-import { AcousticFragmentReassembler, OpticalBlockEncryptor, aesGcmDecrypt, aesGcmEncrypt, canonicalTranscript, decodeFskSamples, decodeHandshakeResponse, deriveHandshakeMaterial, encodeFskPacket, encodeHandshakeResponse, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, makeOffer, makeResponse, opticalNonce, readyConfirm, signIdentity, verifyIdentity, x25519SharedSecret, generateIdentityKeyPair, equalBytes } from './index.ts'
+import { AcousticFragmentReassembler, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OpticalBlockEncryptor, aesGcmDecrypt, aesGcmEncrypt, canonicalTranscript, decodeFskSamples, decodeQuadFskHandshakeSamples, decodeHandshakeResponse, deriveHandshakeMaterial, encodeFskPacket, encodeQuadFskHandshakePacket, encodeHandshakeResponse, encodeReadyConfirm, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, makeOffer, makeResponse, opticalNonce, readyConfirm, signIdentity, verifyIdentity, x25519SharedSecret, generateIdentityKeyPair, equalBytes } from './index.ts'
 
 const sender = generateEphemeralKeyPair(), receiver = generateEphemeralKeyPair(), another = generateEphemeralKeyPair()
 const sharedSender = x25519SharedSecret(sender.privateKey, receiver.publicKey), sharedReceiver = x25519SharedSecret(receiver.privateKey, sender.publicKey)
@@ -6,6 +6,7 @@ if (!equalBytes(sharedSender, sharedReceiver)) throw new Error('X25519 peers did
 if (equalBytes(sharedSender, x25519SharedSecret(sender.privateKey, another.publicKey))) throw new Error('Different X25519 peer unexpectedly agreed')
 
 const offer = makeOffer(sender), response = makeResponse(offer, receiver, 1)
+if (offer.capabilities & HANDSHAKE_CAPABILITY_QUAD_FSK || response.capabilities & HANDSHAKE_CAPABILITY_QUAD_FSK) throw new Error('Legacy offer unexpectedly negotiated four-tone audio')
 const senderMaterial = deriveHandshakeMaterial(offer, response, sender.privateKey)
 const receiverMaterial = deriveHandshakeMaterial(offer, response, receiver.privateKey, 'receiver')
 if (!equalBytes(senderMaterial.keys.opticalEncryptionKey, receiverMaterial.keys.opticalEncryptionKey) || senderMaterial.sas !== receiverMaterial.sas) throw new Error('Session derivation or SAS differs')
@@ -20,9 +21,36 @@ if (equalBytes(senderMaterial.keys.opticalEncryptionKey, deriveHandshakeMaterial
 if (equalBytes(canonicalTranscript(offer, response), canonicalTranscript(alternateOffer, alternateResponse))) throw new Error('Transcript is not deterministic/bound')
 
 const message = encodeHandshakeResponse(response), packets = fragmentHandshakeMessage(0x1234, 6, 0xaabbccdd, 1, message), reassembler = new AcousticFragmentReassembler()
+const legacyDecoded = decodeFskSamples(encodeFskPacket(packets[0], 48000), 48000)
+if (legacyDecoded.length !== 1 || legacyDecoded[0].sequence !== packets[0].sequence) throw new Error('Two-tone handshake fallback failed')
 let rebuilt: Uint8Array | null = null
 for (const [index, packet] of [...packets].reverse().entries()) { const item = reassembler.add(packet, 1_000 + index * 4_400); if (item) rebuilt = item.message }
 if (!rebuilt || !equalBytes(rebuilt, message) || !decodeHandshakeResponse(rebuilt)) throw new Error('Shuffled acoustic fragments did not reassemble')
+const fastOffer = makeOffer(sender, HANDSHAKE_CAPABILITY_QUAD_FSK), fastResponse = makeResponse(fastOffer, receiver, 1, fastOffer.capabilities & HANDSHAKE_CAPABILITY_QUAD_FSK)
+if (fastResponse.capabilities !== HANDSHAKE_CAPABILITY_QUAD_FSK || deriveHandshakeMaterial(fastOffer, fastResponse, sender.privateKey).sas !== deriveHandshakeMaterial(fastOffer, fastResponse, receiver.privateKey, 'receiver').sas) throw new Error('Four-tone capability was not transcript-bound')
+const runtimeOffer = makeOffer(sender, HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL)
+const runtimeResponse = makeResponse(runtimeOffer, receiver, 1, runtimeOffer.capabilities & (HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL))
+if (runtimeResponse.capabilities !== 6 || deriveHandshakeMaterial(runtimeOffer, runtimeResponse, sender.privateKey).sas !== deriveHandshakeMaterial(runtimeOffer, runtimeResponse, receiver.privateKey, 'receiver').sas) throw new Error('Runtime four-tone capability was not negotiated and transcript-bound')
+const oldReceiverResponse = makeResponse(runtimeOffer, receiver, 1, runtimeOffer.capabilities & HANDSHAKE_CAPABILITY_QUAD_FSK)
+if (oldReceiverResponse.capabilities & HANDSHAKE_CAPABILITY_QUAD_CONTROL) throw new Error('Older receiver incorrectly negotiated four-tone runtime ACK')
+let unadvertisedAccepted = false
+try { deriveHandshakeMaterial(fastOffer, makeResponse(fastOffer, receiver, 1, HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL), sender.privateKey); unadvertisedAccepted = true } catch { /* expected */ }
+if (unadvertisedAccepted) throw new Error('Unadvertised runtime four-tone capability was accepted')
+const fastMessage = encodeHandshakeResponse(fastResponse), fastPackets = fragmentHandshakeMessage(0x1234, 30, 0xaabbccdd, 1, fastMessage), fastAssembly = new AcousticFragmentReassembler()
+let fastRebuilt: Uint8Array | null = null
+for (const packet of fastPackets) {
+  const sound = encodeQuadFskHandshakePacket(packet, 48000)
+  const decoded = decodeQuadFskHandshakeSamples(sound, 48000)
+  if (decoded.length !== 1) throw new Error('Four-tone fragmented response failed acoustic decode')
+  const result = fastAssembly.add(decoded[0])
+  if (result) fastRebuilt = result.message
+}
+if (!fastRebuilt || !equalBytes(fastRebuilt, fastMessage)) throw new Error('Four-tone fragmented response failed reassembly')
+const readyMessage = encodeReadyConfirm(fastOffer.sessionId, readyConfirm(deriveHandshakeMaterial(fastOffer, fastResponse, sender.privateKey).keys.handshakeConfirmKey, deriveHandshakeMaterial(fastOffer, fastResponse, sender.privateKey).transcriptHash))
+const fastReadyPackets = fragmentHandshakeMessage(0x1234, 60, 0xaabbccdd, 2, readyMessage)
+const fastResponseSeconds = fastPackets.reduce((seconds, packet) => seconds + encodeQuadFskHandshakePacket(packet, 48000).length / 48000 + 0.015, 0)
+const fastReadySeconds = fastReadyPackets.reduce((seconds, packet) => seconds + encodeQuadFskHandshakePacket(packet, 48000).length / 48000 + 0.015, 0)
+if (fastPackets.length !== 18 || fastReadyPackets.length !== 9 || fastResponseSeconds + fastReadySeconds > 55) throw new Error('Four-tone handshake duration regressed')
 const duplicates = new AcousticFragmentReassembler(); for (const packet of packets) { duplicates.add(packet); duplicates.add(packet) }
 const mixed = new AcousticFragmentReassembler(); for (const packet of packets.slice(0, -1)) mixed.add(packet); const foreign = packets.at(-1)!; foreign.payload[0] ^= 1; if (mixed.add(foreign)) throw new Error('Mixed session fragments combined')
 const retryAssembly = new AcousticFragmentReassembler()
@@ -61,4 +89,4 @@ const receiverSas = deriveHandshakeMaterial(receiverSideOffer, receiverSideRespo
 if (senderSas === receiverSas) throw new Error('MITM substitution did not alter SAS')
 const identity = generateIdentityKeyPair(), signature = signIdentity(identity.privateKey, senderMaterial.transcriptHash)
 if (!verifyIdentity(identity.publicKey, senderMaterial.transcriptHash, signature) || verifyIdentity(another.publicKey, senderMaterial.transcriptHash, signature)) throw new Error('Persistent identity substitution was not rejected')
-console.log(JSON.stringify({ result: 'ok', fragments: packets.length, sas: senderMaterial.sas }))
+console.log(JSON.stringify({ result: 'ok', fragments: packets.length, sas: senderMaterial.sas, fourToneResponseSeconds: Number(fastResponseSeconds.toFixed(2)), fourToneReadySeconds: Number(fastReadySeconds.toFixed(2)) }))

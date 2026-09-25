@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
 import reedSolomonWasmUrl from '@digitaldefiance/reed-solomon-erasure.wasm/wasm?url'
-import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, OPTICAL_PROFILES, OpticalBlockEncryptor, PROTOCOL_VERSION, ReedSolomonBlockCodec, SYMBOL_HEADER_BYTES, TRANSFER_MANIFEST_BYTES, calibrationFrameId, calibrationRates, decodeFskSamples, decodeHandshakeResponse, decodeReadyConfirm, deriveHandshakeMaterial, encodeHandshakeOffer, encodeKeyConfirm, encodeOpticalFrame, framePayloadCapacity, generateEphemeralKeyPair, keyConfirm, makeOffer, opticalProfileNumber, packOpticalSymbol, packTransferManifest, parseHandshakeFragment, readBlockStatusPayload, readCompactStatusPayload, readyConfirm, type HandshakeMaterial, type HandshakeOffer, type OpticalProfile } from '@qrcopy/optical-core'
+import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockEncryptor, PROTOCOL_VERSION, ReedSolomonBlockCodec, SYMBOL_HEADER_BYTES, TRANSFER_MANIFEST_BYTES, calibrationFrameId, calibrationRates, decodeFskSamples, decodeQuadFskSamples, decodeHandshakeResponse, decodeReadyConfirm, deriveHandshakeMaterial, encodeHandshakeOffer, encodeKeyConfirm, encodeOpticalFrame, framePayloadCapacity, generateEphemeralKeyPair, keyConfirm, makeOffer, opticalProfileNumber, packOpticalSymbol, packTransferManifest, parseHandshakeFragment, readBlockStatusPayload, readCompactStatusPayload, readyConfirm, type HandshakeMaterial, type HandshakeOffer, type OpticalProfile } from '@qrcopy/optical-core'
 import { OpticalRenderer, scheduleOpticalFrames } from './OpticalRenderer'
 import { createLocalOpticalArchive, readTransferBlock } from './local-archive'
 import { createVirtualZipArchive, type ArchiveSource } from './virtual-zip'
@@ -21,7 +21,7 @@ export function OpticalFileSender() {
   const directoryInput = useRef<HTMLInputElement>(null), canvasRef = useRef<HTMLCanvasElement>(null), opticalStageRef = useRef<HTMLDivElement>(null), renderer = useRef<OpticalRenderer | null>(null), codec = useRef<ReedSolomonBlockCodec | null>(null)
   const acked = useRef(new Set<number>()), microphone = useRef<MediaStream | null>(null), audioContext = useRef<AudioContext | null>(null), audioTimer = useRef<number | null>(null), audioChunks = useRef<Float32Array[]>([]), seenPackets = useRef(new Set<string>())
   const transferRef = useRef<FileTransfer | null>(null), pairedIdRef = useRef<number | null>(null), completedRef = useRef(false), preparingRef = useRef(false), receiverStorageRef = useRef<'unknown' | 'disk' | 'memory'>('unknown')
-  const handshakeRef = useRef<{ state: SenderHandshakeState; privateKey?: Uint8Array; offer?: HandshakeOffer; material?: HandshakeMaterial; reassembler: AcousticFragmentReassembler }>({ state: 'IDLE', reassembler: new AcousticFragmentReassembler() })
+  const handshakeRef = useRef<{ state: SenderHandshakeState; privateKey?: Uint8Array; offer?: HandshakeOffer; responseCapabilities?: number; material?: HandshakeMaterial; reassembler: AcousticFragmentReassembler }>({ state: 'IDLE', reassembler: new AcousticFragmentReassembler() })
   const responseFragmentsRef = useRef(new Set<number>()), readyFragmentsRef = useRef(new Set<number>())
   const autoPrepareAttemptedRef = useRef(false), sasManuallyVerifiedRef = useRef(false)
   const stagedArchiveRef = useRef<StagedArchive | null>(null), stagingPromiseRef = useRef<Promise<StagedArchive> | null>(null), stageGenerationRef = useRef(0)
@@ -71,12 +71,12 @@ export function OpticalFileSender() {
   const stopMicrophone = () => { if (audioTimer.current !== null) window.clearInterval(audioTimer.current); audioTimer.current = null; microphone.current?.getTracks().forEach(track => track.stop()); microphone.current = null; void audioContext.current?.close(); audioContext.current = null; audioChunks.current = []; seenPackets.current.clear(); setAudioStatus('Microphone off') }
   useEffect(() => () => stopMicrophone(), [])
   const beginOffer = () => {
-    const keys = generateEphemeralKeyPair(), offer = makeOffer(keys), compactId = new DataView(offer.sessionId.buffer, offer.sessionId.byteOffset, 4).getUint32(0)
+    const keys = generateEphemeralKeyPair(), offer = makeOffer(keys, HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL), compactId = new DataView(offer.sessionId.buffer, offer.sessionId.byteOffset, 4).getUint32(0)
     handshakeRef.current = { state: 'DISPLAYING_OFFER', privateKey: keys.privateKey, offer, reassembler: new AcousticFragmentReassembler() }
     autoPrepareAttemptedRef.current = false; sasManuallyVerifiedRef.current = false
     responseFragmentsRef.current.clear(); readyFragmentsRef.current.clear(); setAudioFragmentProgress({ messageType: 0, heard: 0, total: 0 })
     pairedIdRef.current = compactId; setPairedId(compactId); setSas(null); setHandshakeState('DISPLAYING_OFFER')
-    setAudioStatus('Microphone listening; displaying optical offer for the receiver camera…')
+    setAudioStatus('Microphone listening; displaying optical offer with four-tone handshake support…')
   }
   const discardStagedArchive = () => {
     stageGenerationRef.current += 1
@@ -141,7 +141,10 @@ export function OpticalFileSender() {
         if (length < context.sampleRate * 2) return
         const samples = new Float32Array(length); let offset = 0
         for (const chunk of audioChunks.current) { samples.set(chunk, offset); offset += chunk.length }
-        for (const packet of decodeFskSamples(samples, context.sampleRate)) {
+        const runtimeQuad = connectionMode === 'audio' && !!transferRef.current && !!(handshakeRef.current.responseCapabilities && (handshakeRef.current.responseCapabilities & HANDSHAKE_CAPABILITY_QUAD_CONTROL))
+        const packets = runtimeQuad ? decodeQuadFskSamples(samples, context.sampleRate) : decodeFskSamples(samples, context.sampleRate)
+        if (connectionMode === 'audio' && !transferRef.current) packets.push(...decodeQuadFskSamples(samples, context.sampleRate))
+        for (const packet of packets) {
           const key = `${packet.transferId}:${packet.type}:${packet.sequence}`
           if (seenPackets.current.has(key)) continue
           if (seenPackets.current.size > 256) seenPackets.current.clear()
@@ -164,8 +167,9 @@ export function OpticalFileSender() {
               try {
                 handshake.state = 'DERIVING_KEYS'; setHandshakeState('DERIVING_KEYS')
                 handshake.material = deriveHandshakeMaterial(handshake.offer, response, handshake.privateKey)
+                handshake.responseCapabilities = response.capabilities
                 handshake.state = 'AWAITING_USER_VERIFICATION'; setHandshakeState('AWAITING_USER_VERIFICATION'); setSas(handshake.material.sas)
-                setAudioStatus('Receiver detected. Verify the pairing code on both devices.')
+                setAudioStatus(`Receiver detected via ${response.capabilities & HANDSHAKE_CAPABILITY_QUAD_FSK ? 'four-tone' : 'two-tone fallback'} audio. Verify the pairing code on both devices.`)
               } catch { handshake.state = 'FAILED'; setHandshakeState('FAILED'); setAudioStatus('Rejected an unbound or replayed handshake response') }
             } else if (assembled?.messageType === 2) {
               const handshake = handshakeRef.current, ready = decodeReadyConfirm(assembled.message)

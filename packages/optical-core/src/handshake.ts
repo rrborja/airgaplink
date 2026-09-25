@@ -6,6 +6,9 @@ export const KEY_CONFIRM_MAGIC = Uint8Array.of(0x41, 0x48, 0x4b, 1) // AHK1
 export const HANDSHAKE_RESPONSE_MAGIC = Uint8Array.of(0x41, 0x48, 0x52, 1) // AHR1
 export const HANDSHAKE_READY_MAGIC = Uint8Array.of(0x41, 0x48, 0x59, 1) // AHY1
 export const HANDSHAKE_CAPABILITY_IDENTITY = 1
+export const HANDSHAKE_CAPABILITY_QUAD_FSK = 2
+/** Negotiates four-tone physical modulation for runtime control, including compact ACKs. */
+export const HANDSHAKE_CAPABILITY_QUAD_CONTROL = 4
 
 export interface HandshakeOffer { protocolVersion: number; sessionId: Uint8Array; senderEphemeralPublicKey: Uint8Array; senderNonce: Uint8Array; capabilities: number }
 export interface HandshakeResponse { protocolVersion: number; sessionId: Uint8Array; receiverEphemeralPublicKey: Uint8Array; receiverNonce: Uint8Array; profileId: number; capabilities: number; receiverIdentity?: Uint8Array; identitySignature?: Uint8Array; transcriptBinding: Uint8Array }
@@ -24,6 +27,7 @@ export function canonicalTranscript(offer: HandshakeOffer, response: Pick<Handsh
 export function sessionSalt(offer: HandshakeOffer, receiverNonce: Uint8Array) { return sha256Bytes(concatBytes(Uint8Array.of(offer.protocolVersion), offer.sessionId, offer.senderNonce, receiverNonce)) }
 export function deriveHandshakeMaterial(offer: HandshakeOffer, response: HandshakeResponse, privateKey: Uint8Array, role: 'sender' | 'receiver' = 'sender'): HandshakeMaterial {
   if (!equalBytes(offer.sessionId, response.sessionId) || response.protocolVersion !== offer.protocolVersion) throw new Error('Handshake session mismatch')
+  if (response.capabilities & ~offer.capabilities) throw new Error('Unadvertised handshake capability')
   const transcript = canonicalTranscript(offer, response), transcriptHash = sha256Bytes(transcript)
   const keys = deriveSessionKeys(x25519SharedSecret(privateKey, role === 'sender' ? response.receiverEphemeralPublicKey : offer.senderEphemeralPublicKey), sessionSalt(offer, response.receiverNonce))
   const expected = transcriptBinding(keys.sessionBindingKey, transcriptHash)
