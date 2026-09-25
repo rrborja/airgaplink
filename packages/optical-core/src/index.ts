@@ -10,23 +10,26 @@ export type TransportMode = typeof TransportMode[keyof typeof TransportMode]
 export { OpticalBlockCollector, ReedSolomonBlockCodec, packOpticalSymbol, unpackOpticalSymbol, packTransferManifest, unpackTransferManifest, SYMBOL_HEADER_BYTES, TRANSFER_MANIFEST_BYTES } from './fec.ts'
 export type { EncodedBlock, OpticalSymbol, AvailableSymbol, ErasureEngine, TransferManifest } from './fec.ts'
 export { ControlType, CONTROL_MAX_PAYLOAD, FSK_SYMBOL_SECONDS, FSK_ZERO_HZ, FSK_ONE_HZ, QUAD_FSK_TONES_HZ, QUAD_FSK_SYNC_HZ, packControlPacket, unpackControlPacket, packCompactControlPacket, unpackCompactControlPacket, makeBlockStatusPayload, readBlockStatusPayload, makeCompactStatusPayload, readCompactStatusPayload, encodeFskPacket, encodeCompactFskPacket, encodeQuadFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, decodeFskSamples, decodeQuadFskSamples, decodeQuadFskHandshakeSamples } from './control.ts'
-export { OCTAL_FSK_TONES_HZ, OCTAL_FSK_SYNC_HZ, encodeOctalFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, decodeOctalFskSamples } from './octal-fsk.ts'
-export { responseToneCount, runtimeToneAllowed, runtimeToneCount, compactReadyNegotiated } from './audio-mode.ts'
+export { OCTAL_FSK_TONES_HZ, OCTAL_FSK_SYNC_HZ, OCTAL_FAST_SYMBOL_SECONDS, encodeOctalFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, decodeOctalFskSamples } from './octal-fsk.ts'
+export { responseToneCount, runtimeToneAllowed, runtimeToneCount, compactReadyNegotiated, fastReadyNegotiated, octalSymbolSeconds } from './audio-mode.ts'
+export { OPTICAL_QUALITY_VERSION, OPTICAL_QUALITY_CRC_FAILURE, OPTICAL_OFFER_HOLD_MS, makeOpticalQualityPayload, readOpticalQualityPayload, nextOpticalOfferHold } from './optical-feedback.ts'
 export type { ControlPacket } from './control.ts'
 export { CRYPTO_PROTOCOL_VERSION, SESSION_ID_BYTES, NONCE_BYTES, X25519_KEY_BYTES, generateEphemeralKeyPair, x25519SharedSecret, deriveSessionKeys, generateIdentityKeyPair, signIdentity, verifyIdentity, opticalNonce, opticalBlockAad, aesGcmEncrypt, aesGcmDecrypt, OpticalBlockEncryptor, zeroBytes } from './crypto.ts'
 export type { EphemeralKeyPair, SessionKeys } from './crypto.ts'
-export { HANDSHAKE_CAPABILITY_IDENTITY, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_OFFER_MAGIC, KEY_CONFIRM_MAGIC, KEY_CONFIRM_AUDIO_MAGIC, HANDSHAKE_RESPONSE_MAGIC, HANDSHAKE_READY_MAGIC, HANDSHAKE_READY_COMPACT_MAGIC, canonicalTranscript, sessionSalt, deriveHandshakeMaterial, makeOffer, makeResponse, transcriptBinding, sasCode, keyConfirm, keyConfirmAudioMode, readyConfirm, readyConfirmCompact, verifyReadyConfirm, equalBytes, encodeHandshakeOffer, decodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, decodeKeyConfirm, decodeReadyConfirm, encodeReadyConfirm, encodeReadyConfirmCompact, encodeHandshakeResponse, decodeHandshakeResponse, type AcousticToneCount } from './handshake.ts'
+export { HANDSHAKE_CAPABILITY_IDENTITY, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_FAST_READY, HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_OFFER_MAGIC, KEY_CONFIRM_MAGIC, KEY_CONFIRM_AUDIO_MAGIC, HANDSHAKE_RESPONSE_MAGIC, HANDSHAKE_READY_MAGIC, HANDSHAKE_READY_COMPACT_MAGIC, canonicalTranscript, sessionSalt, deriveHandshakeMaterial, makeOffer, makeResponse, transcriptBinding, sasCode, keyConfirm, keyConfirmAudioMode, readyConfirm, readyConfirmCompact, readyConfirmFast, verifyReadyConfirm, equalBytes, encodeHandshakeOffer, decodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, decodeKeyConfirm, decodeReadyConfirm, encodeReadyConfirm, encodeReadyConfirmCompact, encodeHandshakeResponse, decodeHandshakeResponse, type AcousticToneCount } from './handshake.ts'
+export { fastReadyPackets, FastReadyAssembler } from './ready-control.ts'
 export type { HandshakeOffer, HandshakeResponse, HandshakeMaterial } from './handshake.ts'
-export { HANDSHAKE_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_FRAGMENTS, MAX_HANDSHAKE_MESSAGE_BYTES, fragmentHandshakeMessage, parseHandshakeFragment, AcousticFragmentReassembler } from './acoustic-fragment.ts'
+export { HANDSHAKE_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_FRAGMENTS, MAX_HANDSHAKE_MESSAGE_BYTES, fragmentHandshakeMessage, rotateHandshakePackets, parseHandshakeFragment, AcousticFragmentReassembler } from './acoustic-fragment.ts'
 export { AUDIO_PACE_FPS, opticalPaceFps, recommendOpticalPaceCode } from './pacing.ts'
 export { CALIBRATION_STAGE_MS, CALIBRATION_END_STAGE, calibrationRates, calibrationFrameId, readCalibrationFrameId, selectCalibratedPaceCode } from './calibration.ts'
 export type { CalibrationSample } from './calibration.ts'
 
 export interface OpticalProfile {
-  id: 'debug-100x60' | 'binary-200x120' | 'gray4-300x180' | 'gray4-400x240';
+  id: 'debug-100x60' | 'binary-200x120' | 'gray4-300x180' | 'gray4-400x240' | 'rgb4-300x180' | 'rgb4-200x120';
   gridWidth: number;
   gridHeight: number;
   bitsPerSymbol: 1 | 2;
+  colorMode?: 'rgb';
   frameHoldCount: number;
   targetDisplayFps: number;
   expectedCameraFps: number;
@@ -57,8 +60,11 @@ export const BINARY_PROFILE: OpticalProfile = {
 
 export const GRAY4_PROFILE: OpticalProfile = { id: 'gray4-300x180', gridWidth: 300, gridHeight: 180, bitsPerSymbol: 2, frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 export const TARGET_PROFILE: OpticalProfile = { id: 'gray4-400x240', gridWidth: 400, gridHeight: 240, bitsPerSymbol: 2, frameHoldCount: 1, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
+export const RGB4_PROFILE: OpticalProfile = { id: 'rgb4-300x180', gridWidth: 300, gridHeight: 180, bitsPerSymbol: 2, colorMode: 'rgb', frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
+export const RGB4_200_PROFILE: OpticalProfile = { id: 'rgb4-200x120', gridWidth: 200, gridHeight: 120, bitsPerSymbol: 2, colorMode: 'rgb', frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 
-export const OPTICAL_PROFILES = [DEBUG_PROFILE, BINARY_PROFILE, GRAY4_PROFILE, TARGET_PROFILE] as const
+// Append only: profile numbers are present in optical headers and acoustic negotiation.
+export const OPTICAL_PROFILES = [DEBUG_PROFILE, BINARY_PROFILE, GRAY4_PROFILE, TARGET_PROFILE, RGB4_PROFILE, RGB4_200_PROFILE] as const
 export function opticalProfileNumber(profile: OpticalProfile) { return OPTICAL_PROFILES.findIndex(item => item.id === profile.id) + 1 }
 
 export const PROTOCOL_VERSION = 1
@@ -68,6 +74,41 @@ const FINDER_SIZE = 12
 const FINDER_INSET = 2
 const META_ROWS = 4
 const DATA_INSET = 16
+// RGB handshake frames carry five spatially separated copies. 0xfe is a
+// dedicated top-byte tag; 0x80..0x85 and 0xff already encode rate calibration.
+export const RGB_BOOTSTRAP_FRAME_TAG = 0xfe000000
+const RGB_BOOTSTRAP_COPIES = 5
+const RGB_DATA_COPIES = 3
+// A single display cell was not reliably separable through the physical
+// screen/camera pair. Keep the four pure colors, but give each data symbol a
+// 2x2 physical footprint so the camera can sample well inside its edges.
+const RGB_SYMBOL_SPAN = 2
+// Data symbols only: black, red, green, blue. Finder and metadata remain black/white.
+const RGB_SYMBOLS = [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255] as const
+
+type OpticalCellGrid = Pick<EncodedOpticalFrame, 'profile' | 'width' | 'height' | 'cells'>
+
+function isColorCell(frame: OpticalCellGrid, x: number, y: number) {
+  if (frame.profile.colorMode !== 'rgb' || y < DATA_INSET || y >= frame.height - DATA_INSET) return false
+  return (x >= DATA_INSET && x < frame.width - DATA_INSET) ||
+    (x >= DATA_INSET - 5 && x < DATA_INSET - 1) ||
+    (x >= frame.width - DATA_INSET + 1 && x < frame.width - DATA_INSET + 5)
+}
+
+/** Shared palette for the DOM renderer and deterministic raster tests. */
+export function writeOpticalCellRgba(frame: OpticalCellGrid, index: number, target: Uint8Array | Uint8ClampedArray, offset: number) {
+  const level = frame.cells[index]
+  const x = index % frame.width, y = Math.floor(index / frame.width)
+  if (isColorCell(frame, x, y)) {
+    target[offset] = RGB_SYMBOLS[level * 3]
+    target[offset + 1] = RGB_SYMBOLS[level * 3 + 1]
+    target[offset + 2] = RGB_SYMBOLS[level * 3 + 2]
+  } else {
+    const value = level * (frame.profile.bitsPerSymbol === 2 ? 85 : 255)
+    target[offset] = value; target[offset + 1] = value; target[offset + 2] = value
+  }
+  target[offset + 3] = 255
+}
 
 export interface OpticalFrameHeader {
   version: number;
@@ -92,12 +133,14 @@ export interface DecodedOpticalFrame {
   header: OpticalFrameHeader;
   payload: Uint8Array;
   metadataAgreement: number;
+  recovery?: 'spatial-copy' | 'majority' | 'phase';
 }
 
 export interface DecodeFailure {
   ok: false;
   reason: 'finder' | 'metadata' | 'torn-frame' | 'payload-length' | 'payload-crc';
   metadataAgreement?: number;
+  header?: OpticalFrameHeader;
 }
 
 export type OpticalDecodeResult = DecodedOpticalFrame | DecodeFailure
@@ -130,7 +173,26 @@ export function frameDimensions(profile: OpticalProfile) {
 }
 
 export function framePayloadCapacity(profile: OpticalProfile) {
-  return Math.floor(profile.gridWidth * profile.gridHeight * profile.bitsPerSymbol / 8)
+  const rawBytes = Math.floor(profile.gridWidth * profile.gridHeight * profile.bitsPerSymbol / 8)
+  return profile.colorMode === 'rgb' ? Math.floor(rgbSymbolCapacity(profile) * profile.bitsPerSymbol / 8 / RGB_DATA_COPIES) : rawBytes
+}
+
+function rgbSymbolWidth(profile: OpticalProfile) { return Math.floor(profile.gridWidth / RGB_SYMBOL_SPAN) }
+function rgbSymbolCapacity(profile: OpticalProfile) { return rgbSymbolWidth(profile) * Math.floor(profile.gridHeight / RGB_SYMBOL_SPAN) }
+function rgbSymbolOrigin(profile: OpticalProfile, index: number) {
+  return { x: DATA_INSET + RGB_SYMBOL_SPAN * (index % rgbSymbolWidth(profile)), y: DATA_INSET + RGB_SYMBOL_SPAN * Math.floor(index / rgbSymbolWidth(profile)) }
+}
+function setRgbSymbol(cells: Uint8Array, width: number, profile: OpticalProfile, index: number, level: number) {
+  const { x, y } = rgbSymbolOrigin(profile, index)
+  for (let dy = 0; dy < RGB_SYMBOL_SPAN; dy += 1) for (let dx = 0; dx < RGB_SYMBOL_SPAN; dx += 1) setCell(cells, width, x + dx, y + dy, level)
+}
+function getRgbSymbol(cells: Uint8Array, width: number, profile: OpticalProfile, index: number) {
+  const { x, y } = rgbSymbolOrigin(profile, index)
+  const votes = [0, 0, 0, 0]
+  for (let dy = 0; dy < RGB_SYMBOL_SPAN; dy += 1) for (let dx = 0; dx < RGB_SYMBOL_SPAN; dx += 1) votes[getCell(cells, width, x + dx, y + dy)] += 1
+  let winner = getCell(cells, width, x, y)
+  for (let level = 0; level < 4; level += 1) if (votes[level] > votes[winner]) winner = level
+  return winner
 }
 
 function cellIndex(width: number, x: number, y: number) { return y * width + x }
@@ -191,8 +253,19 @@ function bitsToBytes(bits: Uint8Array, length: number) {
   return bytes
 }
 
+function rgbCopyStart(copy: number, symbolsPerCopy: number, totalSymbols: number, copies: number) {
+  return Math.floor(copy * (totalSymbols - symbolsPerCopy) / (copies - 1))
+}
+
+function rgbBootstrapFrame(profile: OpticalProfile, frameId: number) {
+  return profile.colorMode === 'rgb' && (frameId >>> 24) === (RGB_BOOTSTRAP_FRAME_TAG >>> 24)
+}
+
 export function encodeOpticalFrame(payload: Uint8Array, frameId: number, blockId: number, profile = DEBUG_PROFILE): EncodedOpticalFrame {
   if (payload.length > framePayloadCapacity(profile)) throw new Error(`Payload exceeds ${framePayloadCapacity(profile)} byte frame capacity`)
+  const bootstrap = rgbBootstrapFrame(profile, frameId)
+  const rgbCopies = profile.colorMode === 'rgb' ? bootstrap ? RGB_BOOTSTRAP_COPIES : RGB_DATA_COPIES : 1
+  if (profile.colorMode === 'rgb' && payload.length * 4 * rgbCopies > rgbSymbolCapacity(profile)) throw new Error('RGB payload exceeds spatial repetition capacity')
   const { width, height } = frameDimensions(profile)
   const white = profile.bitsPerSymbol === 2 ? 3 : 1
   const cells = new Uint8Array(width * height).fill(white)
@@ -214,10 +287,27 @@ export function encodeOpticalFrame(payload: Uint8Array, frameId: number, blockId
     }
   }
   const payloadBits = bytesToBits(payload)
-  for (let index = 0; index < profile.gridWidth * profile.gridHeight; index += 1) {
+  const fillerSeed = Math.imul(frameId, 0x9e3779b1)
+  for (let index = 0; index < (profile.colorMode === 'rgb' ? rgbSymbolCapacity(profile) : profile.gridWidth * profile.gridHeight); index += 1) {
     const bit = index * profile.bitsPerSymbol
-    const level = profile.bitsPerSymbol === 1 ? payloadBits[bit] || 0 : ((payloadBits[bit] || 0) << 1) | (payloadBits[bit + 1] || 0)
-    setCell(cells, width, DATA_INSET + (index % profile.gridWidth), DATA_INSET + Math.floor(index / profile.gridWidth), level)
+    // A non-periodic filler avoids broad vertical RGB stripes that can alias
+    // against an LCD subpixel grid or a camera Bayer pattern.
+    let noise = (index ^ fillerSeed ^ 0x85ebca6b) >>> 0
+    noise ^= noise >>> 16; noise = Math.imul(noise, 0x7feb352d) >>> 0; noise ^= noise >>> 15
+    const level = profile.colorMode === 'rgb' ? noise & 3
+      : profile.bitsPerSymbol === 1 ? payloadBits[bit] || 0 : ((payloadBits[bit] || 0) << 1) | (payloadBits[bit + 1] || 0)
+    if (profile.colorMode === 'rgb') setRgbSymbol(cells, width, profile, index, level)
+    else setCell(cells, width, DATA_INSET + (index % profile.gridWidth), DATA_INSET + Math.floor(index / profile.gridWidth), level)
+  }
+  if (profile.colorMode === 'rgb') {
+    const symbolsPerCopy = payload.length * 4, totalSymbols = rgbSymbolCapacity(profile)
+    for (let copy = 0; copy < rgbCopies; copy += 1) {
+      const start = rgbCopyStart(copy, symbolsPerCopy, totalSymbols, rgbCopies)
+      for (let symbol = 0; symbol < symbolsPerCopy; symbol += 1) {
+        const bit = symbol * 2, level = (payloadBits[bit] << 1) | payloadBits[bit + 1]
+        setRgbSymbol(cells, width, profile, start + symbol, level)
+      }
+    }
   }
   return { profile, width, height, cells, header, payload: payload.slice() }
 }
@@ -287,16 +377,38 @@ export function decodeOpticalCells(cells: Uint8Array, profile = DEBUG_PROFILE): 
   if (!metadata.header) return { ok: false, reason: 'metadata', metadataAgreement: metadata.agreement }
   if (metadata.torn) return { ok: false, reason: 'torn-frame', metadataAgreement: metadata.agreement }
   if (metadata.header.profileId !== opticalProfileNumber(profile)) return { ok: false, reason: 'metadata', metadataAgreement: metadata.agreement }
-  if (metadata.header.payloadLength > framePayloadCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement }
-  const bits = new Uint8Array(metadata.header.payloadLength * 8)
-  for (let index = 0; index < bits.length; index += 1) {
-    const cell = Math.floor(index / profile.bitsPerSymbol)
-    const level = getCell(cells, width, DATA_INSET + (cell % profile.gridWidth), DATA_INSET + Math.floor(cell / profile.gridWidth))
-    bits[index] = profile.bitsPerSymbol === 1 ? level : (level >>> (1 - (index & 1))) & 1
+  const header = metadata.header
+  if (header.payloadLength > framePayloadCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
+  const bootstrap = rgbBootstrapFrame(profile, header.frameId)
+  const rgbCopies = profile.colorMode === 'rgb' ? bootstrap ? RGB_BOOTSTRAP_COPIES : RGB_DATA_COPIES : 1
+  if (profile.colorMode === 'rgb' && header.payloadLength * 4 * rgbCopies > rgbSymbolCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
+  const readPayload = (startSymbol: number) => {
+    const bits = new Uint8Array(header.payloadLength * 8)
+    for (let index = 0; index < bits.length; index += 1) {
+      const cell = startSymbol + Math.floor(index / profile.bitsPerSymbol)
+      const level = profile.colorMode === 'rgb' ? getRgbSymbol(cells, width, profile, cell) : getCell(cells, width, DATA_INSET + (cell % profile.gridWidth), DATA_INSET + Math.floor(cell / profile.gridWidth))
+      bits[index] = profile.bitsPerSymbol === 1 ? level : (level >>> (1 - (index & 1))) & 1
+    }
+    return bitsToBytes(bits, header.payloadLength)
   }
-  const payload = bitsToBytes(bits, metadata.header.payloadLength)
-  if (crc32(payload) !== metadata.header.payloadCrc32) return { ok: false, reason: 'payload-crc', metadataAgreement: metadata.agreement }
-  return { ok: true, header: metadata.header, payload, metadataAgreement: metadata.agreement }
+  let payload = readPayload(0)
+  let recovery: DecodedOpticalFrame['recovery']
+  if (rgbCopies > 1 && crc32(payload) !== header.payloadCrc32) {
+    const symbolsPerCopy = header.payloadLength * 4, totalSymbols = rgbSymbolCapacity(profile)
+    const copies = Array.from({ length: rgbCopies }, (_, copy) => readPayload(rgbCopyStart(copy, symbolsPerCopy, totalSymbols, rgbCopies)))
+    for (const candidate of copies) if (crc32(candidate) === header.payloadCrc32) { payload = candidate; recovery = 'spatial-copy'; break }
+    if (crc32(payload) !== header.payloadCrc32) {
+      payload = new Uint8Array(header.payloadLength)
+      for (let index = 0; index < payload.length; index += 1) for (let bit = 0; bit < 8; bit += 1) {
+        let votes = 0
+        for (const candidate of copies) votes += (candidate[index] >>> bit) & 1
+        payload[index] |= (votes >= Math.ceil(rgbCopies / 2) ? 1 : 0) << bit
+      }
+      recovery = 'majority'
+    }
+  }
+  if (crc32(payload) !== header.payloadCrc32) return { ok: false, reason: 'payload-crc', metadataAgreement: metadata.agreement, header }
+  return { ok: true, header: metadata.header, payload, metadataAgreement: metadata.agreement, recovery }
 }
 
 export function deterministicPayload(frameId: number, length = framePayloadCapacity(DEBUG_PROFILE)) {
@@ -335,7 +447,10 @@ function luma(image: OpticalImage, x: number, y: number) {
 }
 
 function sampleLuma(image: OpticalImage, x: number, y: number) {
-  return luma(image, x, y)
+  // Logical cell coordinates mark pixel *boundaries*; camera pixel centers
+  // are at n + 0.5. Shift before nearest-pixel lookup so an odd-sized cell
+  // samples its interior pixel rather than the next cell's blurred edge.
+  return luma(image, x - 0.5, y - 0.5)
 }
 
 const FINDER_PROBES = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
@@ -371,15 +486,27 @@ function refineFinder(image: OpticalImage, initial: FinderMatch, distance: numbe
       if (score > best.score) best = { x, y, radius, score }
     }
   }
-  return best
+  // At high grid densities the nearest-pixel probe has a flat score plateau:
+  // choosing its first maximum shifts the inferred frame by 1–2 camera
+  // pixels, enough to corrupt four-level cells. Center that plateau instead.
+  const span = Math.max(2, Math.ceil(best.radius * 0.2))
+  let peak = best.score
+  for (let y = best.y - span; y <= best.y + span; y += 0.5) for (let x = best.x - span; x <= best.x + span; x += 0.5) peak = Math.max(peak, finderScore(image, x, y, best.radius))
+  let sumX = 0, sumY = 0, count = 0
+  for (let y = best.y - span; y <= best.y + span; y += 0.5) for (let x = best.x - span; x <= best.x + span; x += 0.5) {
+    const score = finderScore(image, x, y, best.radius)
+    if (score < peak - 0.001) continue
+    sumX += x; sumY += y; count += 1
+  }
+  return count ? { ...best, x: sumX / count, y: sumY / count, score: peak } : best
 }
 
 function findFinder(image: OpticalImage, minX: number, maxX: number, minY: number, maxY: number, profile: OpticalProfile, radiusHint?: number): FinderMatch | null {
   const logical = frameDimensions(profile), nominalCell = Math.min(image.width / logical.width, image.height / logical.height)
-  const step = Math.max(3, Math.round(nominalCell * 0.65))
+  const step = profile.bitsPerSymbol === 2 ? Math.max(2, Math.round(nominalCell * 0.5)) : Math.max(3, Math.round(nominalCell * 0.65))
   const radii = radiusHint
     ? [0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.35].map(scale => radiusHint * scale)
-    : [0.24, 0.32, 0.42, 0.55, 0.7, 0.9, 1.15, 1.45].map(scale => nominalCell * FINDER_SIZE / 2 * scale)
+    : [0.24, 0.32, 0.42, 0.55, 0.7, 0.9, 1, 1.15, 1.45].map(scale => nominalCell * FINDER_SIZE / 2 * scale)
   let best: FinderMatch | null = null
   for (let y = minY + step; y < maxY - step; y += step) for (let x = minX + step; x < maxX - step; x += step) for (const radius of radii) {
     if (x - radius < 0 || x + radius >= image.width || y - radius < 0 || y + radius >= image.height) continue
@@ -470,28 +597,134 @@ export function detectOpticalBoundary(image: OpticalImage, profile = DEBUG_PROFI
   if (!bottomLeft) return null
   if (report) { report.bottomLeft = bottomLeft; report.stage = 'complete' }
   const { width, height } = frameDimensions(profile), center = FINDER_INSET + FINDER_SIZE / 2
-  const transform = homography([{ x: center, y: center }, { x: width - center, y: center }, { x: width - center, y: height - center }, { x: center, y: height - center }], [topLeft, topRight, bottomRight, bottomLeft])
+  // Finder probes use integer pixel indices as centers. The perspective
+  // transform uses image coordinates whose integer values are pixel edges.
+  const pixelCenter = (point: Point): Point => ({ x: point.x + 0.5, y: point.y + 0.5 })
+  const transform = homography([{ x: center, y: center }, { x: width - center, y: center }, { x: width - center, y: height - center }, { x: center, y: height - center }], [topLeft, topRight, bottomRight, bottomLeft].map(pixelCenter))
   if (!transform) return null
   return { topLeft: mapPoint(transform, { x: 0, y: 0 }), topRight: mapPoint(transform, { x: width, y: 0 }), bottomRight: mapPoint(transform, { x: width, y: height }), bottomLeft: mapPoint(transform, { x: 0, y: height }), confidence: 1 }
 }
 
-/** Samples only expected cell centres; it does not rectify a full camera bitmap. */
-export function sampleOpticalCells(image: OpticalImage, boundary: OpticalBoundary, profile = DEBUG_PROFILE) {
+function sampleRgbOpticalCells(image: OpticalImage, transform: number[], profile: OpticalProfile, dataOffset: Point) {
+  if (!image.data) return null
+  const { width, height } = frameDimensions(profile), pixels = image.data
+  const pixelOffset = (x: number, y: number) => {
+    const source = mapPoint(transform, { x, y })
+    const column = Math.max(0, Math.min(image.width - 1, Math.round(source.x - 0.5)))
+    const row = Math.max(0, Math.min(image.height - 1, Math.round(source.y - 0.5)))
+    return (row * image.width + column) * 4
+  }
+  // Four known colors on both sides of every row calibrate camera color gain,
+  // display gamut and illumination without assuming ideal RGB sensor values.
+  const rail = new Float64Array(profile.gridHeight * 2 * 4 * 3)
+  for (let row = 0; row < profile.gridHeight; row += 1) for (let level = 0; level < 4; level += 1) {
+    const left = pixelOffset(DATA_INSET - 5 + level + 0.5 + dataOffset.x, DATA_INSET + row + 0.5 + dataOffset.y)
+    const right = pixelOffset(width - DATA_INSET + 1 + (3 - level) + 0.5 + dataOffset.x, DATA_INSET + row + 0.5 + dataOffset.y)
+    for (let channel = 0; channel < 3; channel += 1) {
+      rail[(row * 8 + level) * 3 + channel] = pixels[left + channel]
+      rail[(row * 8 + 4 + level) * 3 + channel] = pixels[right + channel]
+    }
+  }
+  const smooth = new Float64Array(rail.length)
+  for (let row = 0; row < profile.gridHeight; row += 1) for (let channel = 0; channel < 24; channel += 1) {
+    const neighborhood: number[] = []
+    for (let nearby = Math.max(0, row - 2); nearby <= Math.min(profile.gridHeight - 1, row + 2); nearby += 1) neighborhood.push(rail[nearby * 24 + channel])
+    neighborhood.sort((a, b) => a - b)
+    smooth[row * 24 + channel] = neighborhood[Math.floor(neighborhood.length / 2)]
+  }
+  let separation = 0, separationCount = 0
+  for (let row = 0; row < profile.gridHeight; row += 1) for (let side = 0; side < 2; side += 1) {
+    for (let first = 0; first < 4; first += 1) for (let second = first + 1; second < 4; second += 1) {
+      const a = (row * 8 + side * 4 + first) * 3, b = (row * 8 + side * 4 + second) * 3
+      separation += Math.hypot(smooth[a] - smooth[b], smooth[a + 1] - smooth[b + 1], smooth[a + 2] - smooth[b + 2])
+      separationCount += 1
+    }
+  }
+  const symbolConfidence = Math.max(0, Math.min(1, separation / separationCount / 180))
+  // Black/white finder and metadata cells use luminance only. Their values
+  // are measured on this same frame, not inferred from the colored data.
+  let blackSum = 0, whiteSum = 0, blackCount = 0, whiteCount = 0
+  for (const [originX, originY] of [[FINDER_INSET, FINDER_INSET], [width - FINDER_INSET - FINDER_SIZE, FINDER_INSET], [width - FINDER_INSET - FINDER_SIZE, height - FINDER_INSET - FINDER_SIZE], [FINDER_INSET, height - FINDER_INSET - FINDER_SIZE]]) {
+    for (let row = 0; row < FINDER_SIZE; row += 1) for (let column = 0; column < FINDER_SIZE; column += 1) {
+      const offset = pixelOffset(originX + column + 0.5, originY + row + 0.5)
+      const value = pixels[offset] * 0.2126 + pixels[offset + 1] * 0.7152 + pixels[offset + 2] * 0.0722
+      if (finderBit(column, row)) { whiteSum += value; whiteCount += 1 } else { blackSum += value; blackCount += 1 }
+    }
+  }
+  const bwThreshold = (blackSum / blackCount + whiteSum / whiteCount) / 2
+  const patchSample = image.width >= width * 5 && image.height >= height * 5
+  const cells = new Uint8Array(width * height)
+  const observed = new Float64Array(3), patch = new Int32Array(5)
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
+    const index = cellIndex(width, x, y)
+    const dataCell = x >= DATA_INSET && x < width - DATA_INSET && y >= DATA_INSET && y < height - DATA_INSET
+    if (y < DATA_INSET || y >= height - DATA_INSET || !((x >= DATA_INSET && x < width - DATA_INSET) || (x >= DATA_INSET - 5 && x < DATA_INSET - 1) || (x >= width - DATA_INSET + 1 && x < width - DATA_INSET + 5))) {
+      const offset = pixelOffset(x + 0.5, y + 0.5)
+      const value = pixels[offset] * 0.2126 + pixels[offset + 1] * 0.7152 + pixels[offset + 2] * 0.0722
+      cells[index] = value >= bwThreshold ? 3 : 0
+      continue
+    }
+    if (dataCell && ((x - DATA_INSET) % RGB_SYMBOL_SPAN !== 0 || (y - DATA_INSET) % RGB_SYMBOL_SPAN !== 0)) {
+      cells[index] = (x - DATA_INSET) % RGB_SYMBOL_SPAN !== 0 ? cells[index - 1] : cells[index - width]
+      continue
+    }
+    // All four cells in a data macrocell carry the same color. Sample its
+    // center, not a one-cell edge, to avoid LCD subpixel/Bayer color fringing.
+    const px = dataCell ? DATA_INSET + RGB_SYMBOL_SPAN * Math.floor((x - DATA_INSET) / RGB_SYMBOL_SPAN) + RGB_SYMBOL_SPAN / 2 + dataOffset.x : x + 0.5 + dataOffset.x
+    const py = dataCell ? DATA_INSET + RGB_SYMBOL_SPAN * Math.floor((y - DATA_INSET) / RGB_SYMBOL_SPAN) + RGB_SYMBOL_SPAN / 2 + dataOffset.y : y + 0.5 + dataOffset.y
+    const offset = pixelOffset(px, py)
+    if (patchSample) {
+      patch[0] = offset; patch[1] = pixelOffset(px - 0.16, py - 0.16); patch[2] = pixelOffset(px + 0.16, py - 0.16)
+      patch[3] = pixelOffset(px - 0.16, py + 0.16); patch[4] = pixelOffset(px + 0.16, py + 0.16)
+    }
+    for (let channel = 0; channel < 3; channel += 1) {
+      if (!patchSample) { observed[channel] = pixels[offset + channel]; continue }
+      let sum = 0, low = 255, high = 0
+      for (let sample = 0; sample < 5; sample += 1) {
+        const value = pixels[patch[sample] + channel]
+        sum += value; low = Math.min(low, value); high = Math.max(high, value)
+      }
+      observed[channel] = (sum - low - high) / 3
+    }
+    const row = y - DATA_INSET, across = Math.max(0, Math.min(1, (px - DATA_INSET) / profile.gridWidth))
+    let best = Infinity, symbol = 0
+    for (let level = 0; level < 4; level += 1) {
+      const left = (row * 8 + level) * 3, right = (row * 8 + 4 + level) * 3
+      let distance = 0
+      for (let channel = 0; channel < 3; channel += 1) {
+        const expected = smooth[left + channel] + (smooth[right + channel] - smooth[left + channel]) * across
+        const difference = observed[channel] - expected
+        distance += difference * difference
+      }
+      if (distance < best) { best = distance; symbol = level }
+    }
+    cells[index] = symbol
+  }
+  return { cells, symbolConfidence }
+}
+
+/** Samples expected cells and their known calibration rails without rectifying
+ * the full camera bitmap. Four-level thresholds follow local illumination. */
+export function sampleOpticalCells(image: OpticalImage, boundary: OpticalBoundary, profile = DEBUG_PROFILE, dataOffset: Point = { x: 0, y: 0 }) {
   const transform = transformForBoundary(boundary, profile), { width, height } = frameDimensions(profile)
   if (!transform) return null
+  if (profile.colorMode === 'rgb') return sampleRgbOpticalCells(image, transform, profile, dataOffset)
   const levels = profile.bitsPerSymbol === 2 ? 4 : 2
   const sums = new Float64Array(levels), counts = new Uint32Array(levels)
+  const railSamples = levels === 4 ? new Float64Array(profile.gridHeight * 8) : null
   const calibrate = (x: number, row: number, known: number) => {
     const source = mapPoint(transform, { x: x + 0.5, y: DATA_INSET + row + 0.5 })
-    sums[known] += sampleLuma(image, source.x, source.y); counts[known] += 1
+    const value = sampleLuma(image, source.x, source.y)
+    sums[known] += value; counts[known] += 1
+    return value
   }
   for (let row = 0; row < profile.gridHeight; row += 1) {
     if (profile.bitsPerSymbol === 1) {
       calibrate(DATA_INSET - 2, row, row & 1)
       calibrate(width - DATA_INSET + 1, row, (row + 1) & 1)
     } else for (let level = 0; level < 4; level += 1) {
-      calibrate(DATA_INSET - 5 + level, row, level)
-      calibrate(width - DATA_INSET + 1 + level, row, 3 - level)
+      railSamples![row * 8 + level] = calibrate(DATA_INSET - 5 + level, row, level)
+      railSamples![row * 8 + 4 + 3 - level] = calibrate(width - DATA_INSET + 1 + level, row, 3 - level)
     }
   }
   const means = Array.from(sums, (sum, index) => sum / Math.max(1, counts[index]))
@@ -506,16 +739,55 @@ export function sampleOpticalCells(image: OpticalImage, boundary: OpticalBoundar
     if (finderWhite - finderBlack > means[1] - means[0]) { means[0] = finderBlack; means[1] = finderWhite }
   }
   const thresholds = means.slice(0, -1).map((value, index) => (value + means[index + 1]) / 2)
-  const contrast = Math.min(...means.slice(1).map((value, index) => value - means[index]))
-  const confidence = Math.max(0, Math.min(1, contrast / (profile.bitsPerSymbol === 2 ? 42 : 128)))
+  let contrast = Math.min(...means.slice(1).map((value, index) => value - means[index]))
+  let localThresholds: Float64Array | null = null
+  if (railSamples) {
+    // The four known levels appear at both edges of every data row. Smooth
+    // small camera outliers vertically, then interpolate their thresholds
+    // across each row instead of assuming one exposure for the whole screen.
+    const smoothed = new Float64Array(railSamples.length)
+    for (let row = 0; row < profile.gridHeight; row += 1) for (let channel = 0; channel < 8; channel += 1) {
+      const neighborhood: number[] = []
+      for (let nearby = Math.max(0, row - 2); nearby <= Math.min(profile.gridHeight - 1, row + 2); nearby += 1) neighborhood.push(railSamples[nearby * 8 + channel])
+      neighborhood.sort((left, right) => left - right)
+      smoothed[row * 8 + channel] = neighborhood[Math.floor(neighborhood.length / 2)]
+    }
+    localThresholds = new Float64Array(profile.gridHeight * 6)
+    const separations: number[] = []
+    for (let row = 0; row < profile.gridHeight; row += 1) for (let side = 0; side < 2; side += 1) for (let level = 0; level < 3; level += 1) {
+      const first = smoothed[row * 8 + side * 4 + level], second = smoothed[row * 8 + side * 4 + level + 1]
+      localThresholds[row * 6 + side * 3 + level] = (first + second) / 2
+      separations.push(second - first)
+    }
+    separations.sort((left, right) => left - right)
+    contrast = separations[Math.floor(separations.length * 0.1)]
+  }
+  const confidence = Math.max(0, Math.min(1, contrast / (localThresholds ? 42 : 128)))
+  const sampleLogical = (x: number, y: number) => {
+    const denominator = transform[6] * x + transform[7] * y + transform[8]
+    return sampleLuma(image, (transform[0] * x + transform[1] * y + transform[2]) / denominator, (transform[3] * x + transform[4] * y + transform[5]) / denominator)
+  }
+  // GPU input is already one sampled pixel per logical cell. The CPU camera
+  // path can use a trimmed center patch when at least a few pixels remain.
+  const patchSample = !!localThresholds && image.width >= width * 5 && image.height >= height * 5
   const cells = new Uint8Array(width * height)
   for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
-    const px = x + 0.5, py = y + 0.5, denominator = transform[6] * px + transform[7] * py + transform[8]
-    const sourceX = (transform[0] * px + transform[1] * py + transform[2]) / denominator
-    const sourceY = (transform[3] * px + transform[4] * py + transform[5]) / denominator
-    const value = sampleLuma(image, sourceX, sourceY)
+    const px = x + 0.5, py = y + 0.5
+    let value = sampleLogical(px, py)
+    if (patchSample) {
+      const a = sampleLogical(px - 0.15, py - 0.15), b = sampleLogical(px + 0.15, py - 0.15)
+      const c = sampleLogical(px - 0.15, py + 0.15), d = sampleLogical(px + 0.15, py + 0.15)
+      value = (value + a + b + c + d - Math.min(value, a, b, c, d) - Math.max(value, a, b, c, d)) / 3
+    }
     let level = 0
-    while (level < thresholds.length && value >= thresholds[level]) level += 1
+    if (localThresholds) {
+      const row = Math.max(0, Math.min(profile.gridHeight - 1, y - DATA_INSET))
+      const across = Math.max(0, Math.min(1, (x - DATA_INSET + 0.5) / profile.gridWidth))
+      for (let index = 0; index < 3; index += 1) {
+        const left = localThresholds[row * 6 + index], right = localThresholds[row * 6 + 3 + index]
+        if (value >= left + (right - left) * across) level += 1
+      }
+    } else while (level < thresholds.length && value >= thresholds[level]) level += 1
     cells[cellIndex(width, x, y)] = level
   }
   return { cells, symbolConfidence: confidence }
@@ -534,9 +806,7 @@ export function decodeOpticalImage(image: OpticalImage, profile = DEBUG_PROFILE,
 export function rasterizeOpticalCells(frame: EncodedOpticalFrame, cellPixels = 8): OpticalImage {
   const width = frame.width * cellPixels, height = frame.height * cellPixels, data = new Uint8ClampedArray(width * height * 4)
   for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
-    const level = frame.cells[cellIndex(frame.width, Math.floor(x / cellPixels), Math.floor(y / cellPixels))]
-    const value = level * (255 / (frame.profile.bitsPerSymbol === 2 ? 3 : 1)), offset = (y * width + x) * 4
-    data[offset] = value; data[offset + 1] = value; data[offset + 2] = value; data[offset + 3] = 255
+    writeOpticalCellRgba(frame, cellIndex(frame.width, Math.floor(x / cellPixels), Math.floor(y / cellPixels)), data, (y * width + x) * 4)
   }
   return { data, width, height }
 }

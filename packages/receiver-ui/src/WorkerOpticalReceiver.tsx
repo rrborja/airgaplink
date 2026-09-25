@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
 import reedSolomonWasmUrl from '@digitaldefiance/reed-solomon-erasure.wasm/wasm?url'
-import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockCollector, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, aesGcmDecrypt, compactReadyNegotiated, decodeHandshakeOffer, decodeKeyConfirm, deriveHandshakeMaterial, encodeHandshakeResponse, encodeReadyConfirm, encodeReadyConfirmCompact, equalBytes, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeResponse, opticalBlockAad, opticalNonce, calibrationRates, encodeCompactFskPacket, encodeFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, frameDimensions, isDeterministicPayload, makeBlockStatusPayload, makeCompactStatusPayload, opticalPaceFps, opticalProfileNumber, readCalibrationFrameId, recommendOpticalPaceCode, responseToneCount, runtimeToneAllowed, selectCalibratedPaceCode, unpackOpticalSymbol, unpackTransferManifest, readyConfirm, readyConfirmCompact, type AcousticToneCount, type ControlPacket, type HandshakeMaterial, type HandshakeOffer, type OpticalImageDecode, type OpticalProfile, type TransferManifest } from '@qrcopy/optical-core'
+import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockCollector, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, aesGcmDecrypt, compactReadyNegotiated, decodeHandshakeOffer, decodeKeyConfirm, deriveHandshakeMaterial, encodeHandshakeResponse, encodeReadyConfirm, encodeReadyConfirmCompact, equalBytes, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeResponse, opticalBlockAad, opticalNonce, calibrationRates, encodeCompactFskPacket, encodeFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, frameDimensions, isDeterministicPayload, makeBlockStatusPayload, makeCompactStatusPayload, opticalPaceFps, opticalProfileNumber, readCalibrationFrameId, recommendOpticalPaceCode, responseToneCount, runtimeToneAllowed, selectCalibratedPaceCode, unpackOpticalSymbol, unpackTransferManifest, readyConfirm, readyConfirmCompact, writeOpticalCellRgba, type AcousticToneCount, type ControlPacket, type HandshakeMaterial, type HandshakeOffer, type OpticalImageDecode, type OpticalProfile, type TransferManifest } from '@qrcopy/optical-core'
+import { HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_FAST_READY, fastReadyNegotiated, fastReadyPackets, octalSymbolSeconds, readyConfirmFast, rotateHandshakePackets } from '@qrcopy/optical-core'
+import { RGB_BOOTSTRAP_FRAME_TAG, makeOpticalQualityPayload } from '@qrcopy/optical-core'
 import { LocalOpticalSink } from './local-sink'
 import { IndexedDbOpticalSink } from './indexeddb-sink'
 
@@ -10,7 +12,7 @@ type StorageMode = 'checking' | 'opfs' | 'indexeddb' | 'memory'
 interface FileReceiveState { id: number | null; collectors: Map<number, OpticalBlockCollector>; blocks: Map<number, Uint8Array>; received: Set<number>; receivedBytes: number; manifest: TransferManifest | null; sink: OpticalSink | null; sinkOpening: boolean; storageError: boolean; verifying: boolean }
 function emptyFileState(): FileReceiveState { return { id: null, collectors: new Map(), blocks: new Map(), received: new Set(), receivedBytes: 0, manifest: null, sink: null, sinkOpening: false, storageError: false, verifying: false } }
 type ConnectionMode = 'direct' | 'audio'
-type ReceiverHandshakeState = 'IDLE' | 'WAITING_FOR_OFFER' | 'OFFER_RECEIVED' | 'GENERATING_RESPONSE' | 'SENDING_AUDIO_RESPONSE' | 'DERIVING_KEYS' | 'AWAITING_USER_VERIFICATION' | 'WAITING_FOR_KEY_CONFIRM' | 'SENDING_READY' | 'ESTABLISHED' | 'FAILED' | 'CANCELLED'
+type ReceiverHandshakeState = 'IDLE' | 'WAITING_FOR_OFFER' | 'OFFER_RECEIVED' | 'GENERATING_RESPONSE' | 'SENDING_AUDIO_RESPONSE' | 'DERIVING_KEYS' | 'AWAITING_USER_VERIFICATION' | 'WAITING_FOR_KEY_CONFIRM' | 'SENDING_READY' | 'WAITING_FOR_SENDER' | 'ESTABLISHED' | 'FAILED' | 'CANCELLED'
 
 export function WorkerOpticalReceiver() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -18,8 +20,9 @@ export function WorkerOpticalReceiver() {
   const workerRef = useRef<Worker | null>(null)
   const wasmBytes = useRef<Uint8Array | null>(null), recoveryCodec = useRef<ReedSolomonBlockCodec | null>(null), fileState = useRef<FileReceiveState>(emptyFileState())
   const speaker = useRef<AudioContext | null>(null), speakerTimer = useRef<number | null>(null), completionStopTimer = useRef<number | null>(null), readyPlaybackTimer = useRef<number | null>(null), audioSequence = useRef(0), verified = useRef(false), readySent = useRef(false), alignmentSeen = useRef(false), opticalLost = useRef(false), lastOpticalAt = useRef(0), resumeRepeats = useRef(0), completeSignalsSent = useRef(0), nextAudioStart = useRef(0)
-  const handshakeRef = useRef<{ state: ReceiverHandshakeState; offer?: HandshakeOffer; responseCapabilities?: number; privateKey?: Uint8Array; material?: HandshakeMaterial; responseMessage?: Uint8Array; readyMessage?: Uint8Array; audioMode?: AcousticToneCount; responseRounds: number; readyRounds: number; outgoing: ControlPacket[]; reassembler: AcousticFragmentReassembler }>({ state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() })
+  const handshakeRef = useRef<{ state: ReceiverHandshakeState; offer?: HandshakeOffer; responseCapabilities?: number; privateKey?: Uint8Array; material?: HandshakeMaterial; responseMessage?: Uint8Array; readyMessage?: Uint8Array; fastReadyMac?: Uint8Array; audioMode?: AcousticToneCount; responseRounds: number; readyRounds: number; outgoing: ControlPacket[]; reassembler: AcousticFragmentReassembler }>({ state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() })
   const fileDecodeStats = useRef({ symbols: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 })
+  const qualityFeedbackRef = useRef<{ transferId: number; failures: number; nextAt: number } | null>(null)
   const fileStarted = useRef(0)
   const pacingCode = useRef(0)
   const calibrationMode = useRef<'idle' | 'probing' | 'selected' | 'transferring'>('idle')
@@ -42,7 +45,7 @@ export function WorkerOpticalReceiver() {
   const sasManuallyVerifiedRef = useRef(false)
   const [storageProblem, setStorageProblem] = useState('')
   const diskStorageRef = useRef<StorageMode>('checking')
-  const [status, setStatus] = useState({ camera: 'starting', finder: 'searching', reason: 'starting', frame: -1, valid: 0, failed: 0, unique: 0, processingFps: 0, validFps: 0, usefulKBps: 0, decodeMs: 0, acquireMs: 0, drawMs: 0, readMs: 0, sampleMs: 0, crcMs: 0, pixelPath: 'starting', gpuDiagnostic: 'not tested', pixelsPerCell: 0, confidence: 0, deterministic: false, boundary: 'searching', fileSymbols: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastFileBlock: -1 })
+  const [status, setStatus] = useState({ camera: 'starting', finder: 'searching', reason: 'starting', recovery: 'none', frame: -1, valid: 0, failed: 0, unique: 0, processingFps: 0, validFps: 0, usefulKBps: 0, decodeMs: 0, acquireMs: 0, drawMs: 0, readMs: 0, sampleMs: 0, crcMs: 0, pixelPath: 'starting', gpuDiagnostic: 'not tested', pixelsPerCell: 0, confidence: 0, deterministic: false, boundary: 'searching', fileSymbols: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastFileBlock: -1 })
   useEffect(() => { let cancelled = false; void fetch(reedSolomonWasmUrl).then(response => response.arrayBuffer()).then(bytes => { if (!cancelled) {
     wasmBytes.current = new Uint8Array(bytes)
     // The current WASM wrapper fails repeated reconstructions on one instance.
@@ -85,23 +88,32 @@ export function WorkerOpticalReceiver() {
     // allowed one slot after the current tone so the sender can stop promptly.
     if (!verified.current && nextAudioStart.current > context.currentTime + 0.2) return
     let type: ControlType, payload: Uint8Array, compact = false
-    const transferId = connectionMode === 'audio' ? audioSessionIdRef.current : state.id
+    let transferId = connectionMode === 'audio' ? audioSessionIdRef.current : state.id
     if (transferId === null) return
     const handshake = handshakeRef.current
     if (connectionMode === 'audio' && handshake.outgoing.length === 0 && handshake.offer) {
       const compactId = audioSessionIdRef.current
       if ((handshake.state === 'AWAITING_USER_VERIFICATION' || handshake.state === 'WAITING_FOR_KEY_CONFIRM') && handshake.responseMessage) {
-        handshake.outgoing = fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 1, handshake.responseMessage)
+        handshake.outgoing = rotateHandshakePackets(fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 1, handshake.responseMessage), handshake.responseRounds)
         audioSequence.current = (audioSequence.current + handshake.outgoing.length) & 0xffff
         handshake.responseRounds += 1; setResponseRounds(handshake.responseRounds)
-      } else if (handshake.state === 'ESTABLISHED' && handshake.readyMessage && !state.manifest) {
-        handshake.outgoing = fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 2, handshake.readyMessage)
+      } else if (handshake.state === 'WAITING_FOR_SENDER' && (handshake.fastReadyMac || handshake.readyMessage) && !alignmentSeen.current) {
+        handshake.outgoing = rotateHandshakePackets(handshake.fastReadyMac
+          ? fastReadyPackets(compactId, audioSequence.current, handshake.fastReadyMac)
+          : fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 2, handshake.readyMessage!), handshake.readyRounds)
         audioSequence.current = (audioSequence.current + handshake.outgoing.length) & 0xffff
         handshake.readyRounds += 1
       }
     }
     const pendingHandshakePacket = connectionMode === 'audio' ? handshake.outgoing.shift() : undefined
     if (pendingHandshakePacket) { type = pendingHandshakePacket.type; payload = pendingHandshakePacket.payload }
+    else if (connectionMode === 'audio' && profile.colorMode === 'rgb' && handshake.state === 'WAITING_FOR_OFFER' && qualityFeedbackRef.current && qualityFeedbackRef.current.failures >= 3 && performance.now() >= qualityFeedbackRef.current.nextAt) {
+      const feedback = qualityFeedbackRef.current
+      transferId = feedback.transferId
+      type = ControlType.OPTICAL_QUALITY
+      payload = makeOpticalQualityPayload(opticalProfileNumber(profile), feedback.failures >= 12 ? 2 : 1)
+      feedback.nextAt = performance.now() + 5000
+    }
     else if (verified.current) { type = ControlType.TRANSFER_COMPLETE; payload = new Uint8Array(); compact = connectionMode === 'audio' }
     else if (connectionMode === 'audio' && opticalLost.current) { type = ControlType.PAUSE; payload = Uint8Array.of(opticalProfileNumber(profile), (pacingCode.current << 4) | PROTOCOL_VERSION) }
     else if (connectionMode === 'audio' && resumeRepeats.current > 0) { type = ControlType.RESUME; payload = Uint8Array.of(opticalProfileNumber(profile), (pacingCode.current << 4) | PROTOCOL_VERSION); resumeRepeats.current -= 1 }
@@ -129,11 +141,12 @@ export function WorkerOpticalReceiver() {
       if (type === ControlType.READY) readySent.current = true
     }
     const packet = pendingHandshakePacket || { type, transferId, sequence: audioSequence.current++ & 0xffff, payload }
-    const responseFragment = !!pendingHandshakePacket && pendingHandshakePacket.payload[2] === 1
+    const responseFragment = pendingHandshakePacket?.type === ControlType.HANDSHAKE_FRAGMENT && pendingHandshakePacket.payload[2] === 1
     const handshakeMode: AcousticToneCount = responseFragment ? responseToneCount(handshake.offer?.capabilities || 0, handshake.responseRounds) : handshake.audioMode || 2
-    const toneCount: AcousticToneCount = pendingHandshakePacket ? handshakeMode : handshake.state === 'ESTABLISHED' ? handshake.audioMode || 2 : 2
-    const samples = toneCount === 8 ? pendingHandshakePacket ? encodeOctalFskHandshakePacket(packet, context.sampleRate) : compact ? encodeOctalCompactFskPacket(packet, context.sampleRate) : encodeOctalFskPacket(packet, context.sampleRate)
-      : toneCount === 4 ? pendingHandshakePacket ? encodeQuadFskHandshakePacket(packet, context.sampleRate) : compact ? encodeQuadCompactFskPacket(packet, context.sampleRate) : encodeQuadFskPacket(packet, context.sampleRate)
+    const toneCount: AcousticToneCount = pendingHandshakePacket ? handshakeMode : type === ControlType.OPTICAL_QUALITY ? 8 : handshake.state === 'ESTABLISHED' ? handshake.audioMode || 2 : 2
+    const octalSeconds = type === ControlType.OPTICAL_QUALITY ? undefined : octalSymbolSeconds(handshake.offer?.capabilities || 0, handshake.responseCapabilities || 0)
+    const samples = toneCount === 8 ? pendingHandshakePacket?.type === ControlType.HANDSHAKE_FRAGMENT ? encodeOctalFskHandshakePacket(packet, context.sampleRate, octalSeconds) : compact ? encodeOctalCompactFskPacket(packet, context.sampleRate, octalSeconds) : encodeOctalFskPacket(packet, context.sampleRate, octalSeconds)
+      : toneCount === 4 ? pendingHandshakePacket?.type === ControlType.HANDSHAKE_FRAGMENT ? encodeQuadFskHandshakePacket(packet, context.sampleRate) : compact ? encodeQuadCompactFskPacket(packet, context.sampleRate) : encodeQuadFskPacket(packet, context.sampleRate)
         : compact ? encodeCompactFskPacket(packet, context.sampleRate) : encodeFskPacket(packet, context.sampleRate)
     const buffer = context.createBuffer(1, samples.length, context.sampleRate)
     buffer.copyToChannel(samples, 0)
@@ -142,14 +155,15 @@ export function WorkerOpticalReceiver() {
     source.start(start)
     nextAudioStart.current = start + buffer.duration + (toneCount === 2 ? 0.1 : 0.015)
     setAudioPacketsSent(value => value + 1)
-    setSpeakerStatus(type === ControlType.HANDSHAKE_FRAGMENT ? `Sending ${toneCount}-tone secure handshake fragment (${handshake.outgoing.length} remaining)` : type === ControlType.HELLO ? `Sending audio HELLO · session ${transferId.toString(16).padStart(8, '0')}` : type === ControlType.PROFILE_SELECTED ? 'Camera aligned · requesting optical calibration' : type === ControlType.CALIBRATION_SELECTED ? `Calibration selected ${opticalPaceFps(selectedPaceCode.current)} FPS · sending over sound` : type === ControlType.PAUSE ? 'Optical link lost · sending PAUSE over sound' : type === ControlType.RESUME ? 'Optical link reacquired · sending RESUME over sound' : type === ControlType.TRANSFER_COMPLETE ? 'Sending verified-complete tone' : type === ControlType.READY ? 'Optical manifest confirmed; sending compact READY' : compact ? `Sending ${toneCount}-tone compact cumulative block ACK` : 'Sending block bitmap over speaker')
+    setSpeakerStatus(type === ControlType.HANDSHAKE_FRAGMENT ? `Sending ${toneCount}-tone secure handshake fragment (${handshake.outgoing.length} remaining)` : type === ControlType.HANDSHAKE_COMPLETE ? `Sending ${toneCount}-tone authenticated READY (${handshake.outgoing.length} part remaining)` : type === ControlType.OPTICAL_QUALITY ? 'RGB header readable, payload failing CRC · asking sender to hold the offer longer' : type === ControlType.HELLO ? `Sending audio HELLO · session ${transferId.toString(16).padStart(8, '0')}` : type === ControlType.PROFILE_SELECTED ? 'Camera aligned · requesting optical calibration' : type === ControlType.CALIBRATION_SELECTED ? `Calibration selected ${opticalPaceFps(selectedPaceCode.current)} FPS · sending over sound` : type === ControlType.PAUSE ? 'Optical link lost · sending PAUSE over sound' : type === ControlType.RESUME ? 'Optical link reacquired · sending RESUME over sound' : type === ControlType.TRANSFER_COMPLETE ? 'Sending verified-complete tone' : type === ControlType.READY ? 'Optical manifest confirmed; sending compact READY' : compact ? `Sending ${toneCount}-tone compact cumulative block ACK` : 'Sending block bitmap over speaker')
     if (pendingHandshakePacket && !handshake.outgoing.length && handshake.state === 'SENDING_READY') {
       setSpeakerStatus(`Final ${toneCount}-tone READY queued; waiting for playback to finish…`)
       readyPlaybackTimer.current = window.setTimeout(() => {
         readyPlaybackTimer.current = null
         if (handshakeRef.current !== handshake || handshake.state !== 'SENDING_READY') return
-        handshake.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED')
-        setSpeakerStatus(`${handshake.audioMode || 2}-tone audio established · ${sasManuallyVerifiedRef.current ? 'pairing code manually confirmed' : 'hands-free pairing · peer identity unverified'} · Encrypted · AES-256-GCM`)
+        handshake.state = 'WAITING_FOR_SENDER'; setHandshakeState('WAITING_FOR_SENDER')
+        setSpeakerStatus('Authenticated READY played; repeating until the sender switches to optical data…')
+        setFileStatus('Waiting for sender to receive READY and display the paired optical alignment frame…')
       }, Math.ceil((nextAudioStart.current - context.currentTime) * 1000))
     }
     if (type === ControlType.TRANSFER_COMPLETE && ++completeSignalsSent.current >= 3) {
@@ -253,6 +267,7 @@ export function WorkerOpticalReceiver() {
   }, [connectionMode, handsFreePairing, handshakeState])
   const cancelHandshake = () => {
     const handshake = handshakeRef.current
+    qualityFeedbackRef.current = null
     if (readyPlaybackTimer.current !== null) window.clearTimeout(readyPlaybackTimer.current); readyPlaybackTimer.current = null
     handshake.privateKey?.fill(0); handshake.material?.keys.opticalEncryptionKey.fill(0); handshake.material?.keys.handshakeConfirmKey.fill(0); handshake.material?.keys.sessionBindingKey.fill(0); handshake.reassembler.clear()
     handshakeRef.current = { state: 'CANCELLED', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() }; sasManuallyVerifiedRef.current = false; setHandshakeState('CANCELLED'); setResponseRounds(0); setSas(null); setSpeakerStatus('Secure pairing cancelled')
@@ -262,9 +277,10 @@ export function WorkerOpticalReceiver() {
     const offer = decodeHandshakeOffer(payload)
     if (offer && connectionMode === 'audio' && (handshake.state === 'WAITING_FOR_OFFER' || handshake.state === 'CANCELLED')) {
       try {
+        qualityFeedbackRef.current = null
         const compactId = new DataView(offer.sessionId.buffer, offer.sessionId.byteOffset, 4).getUint32(0), receiver = generateEphemeralKeyPair()
         handshake.state = 'GENERATING_RESPONSE'; setHandshakeState('GENERATING_RESPONSE'); audioSessionIdRef.current = compactId; setAudioSessionId(compactId)
-        const response = makeResponse(offer, receiver, opticalProfileNumber(profile), offer.capabilities & (HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL | HANDSHAKE_CAPABILITY_COMPACT_READY))
+        const response = makeResponse(offer, receiver, opticalProfileNumber(profile), offer.capabilities & (HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL | HANDSHAKE_CAPABILITY_COMPACT_READY | HANDSHAKE_CAPABILITY_FAST_READY | HANDSHAKE_CAPABILITY_FAST_OCTAL))
         handshake.offer = offer; handshake.responseCapabilities = response.capabilities; handshake.privateKey = receiver.privateKey; handshake.material = deriveHandshakeMaterial(offer, response, receiver.privateKey, 'receiver')
         handshake.responseMessage = encodeHandshakeResponse(response)
         handshake.outgoing = fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 1, handshake.responseMessage); audioSequence.current = (audioSequence.current + handshake.outgoing.length) & 0xffff
@@ -280,10 +296,15 @@ export function WorkerOpticalReceiver() {
     if (confirm && connectionMode === 'audio' && handshake.state === 'WAITING_FOR_KEY_CONFIRM' && handshake.offer && handshake.material && modeAllowed && equalBytes(confirm.sessionId, handshake.offer.sessionId) && equalBytes(confirm.confirmation, confirm.toneCount ? keyConfirmAudioMode(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash, confirm.toneCount) : keyConfirm(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))) {
       handshake.audioMode = confirmedMode
       const compactId = new DataView(handshake.offer.sessionId.buffer, handshake.offer.sessionId.byteOffset, 4).getUint32(0)
-      handshake.readyMessage = confirmedMode === 8 && compactReadyNegotiated(handshake.offer.capabilities, handshake.responseCapabilities || 0)
+      const fastReady = confirmedMode === 8 && fastReadyNegotiated(handshake.offer.capabilities, handshake.responseCapabilities || 0)
+      handshake.fastReadyMac = fastReady ? readyConfirmFast(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash) : undefined
+      handshake.readyMessage = fastReady ? undefined : confirmedMode === 8 && compactReadyNegotiated(handshake.offer.capabilities, handshake.responseCapabilities || 0)
         ? encodeReadyConfirmCompact(handshake.offer.sessionId, readyConfirmCompact(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))
         : encodeReadyConfirm(handshake.offer.sessionId, readyConfirm(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))
-      handshake.outgoing = fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 2, handshake.readyMessage); audioSequence.current = (audioSequence.current + handshake.outgoing.length) & 0xffff
+      handshake.outgoing = fastReady
+        ? fastReadyPackets(compactId, audioSequence.current, handshake.fastReadyMac!)
+        : fragmentHandshakeMessage(compactId, audioSequence.current, compactId, 2, handshake.readyMessage!)
+      audioSequence.current = (audioSequence.current + handshake.outgoing.length) & 0xffff
       handshake.readyRounds = 1; handshake.responseMessage = undefined
       handshake.state = 'SENDING_READY'; setHandshakeState('SENDING_READY'); setFileStatus(`Sender key confirmed. Sending ${confirmedMode}-tone receiver confirmation…`); sendAcousticStatus()
       return true
@@ -292,17 +313,27 @@ export function WorkerOpticalReceiver() {
       setFileStatus('Optical key confirmation rejected: session, audio mode, or authentication mismatch')
       return true
     }
+    // Repeated optical key-confirmation frames remain handshake traffic after
+    // our READY plays; they are not malformed file symbols.
+    if (confirm && handshake.offer && equalBytes(confirm.sessionId, handshake.offer.sessionId)) return true
     return false
   }
   const acceptFileFrame = async (result: OpticalImageDecode) => {
     if (!recoveryCodec.current || !result.ok) return
     if (connectionMode === 'audio' && receiveHandshakeFrame(result.payload)) return
-    if (connectionMode === 'audio' && handshakeRef.current.state !== 'ESTABLISHED') return
+    if (connectionMode === 'audio' && handshakeRef.current.state !== 'WAITING_FOR_SENDER' && handshakeRef.current.state !== 'ESTABLISHED') return
     const symbol = unpackOpticalSymbol(result.payload)
     if (!symbol || symbol.blockId !== result.header.blockId) { fileDecodeStats.current.invalidSymbols += 1; return }
     const state = fileState.current
     if (connectionMode === 'audio' && symbol.transferId !== audioSessionId) { fileDecodeStats.current.sessionRejects += 1; return }
     if (connectionMode === 'audio' && (result.header.profileId !== opticalProfileNumber(profile) || result.header.version !== PROTOCOL_VERSION)) { fileDecodeStats.current.invalidSymbols += 1; return }
+    if (connectionMode === 'audio' && !alignmentSeen.current) {
+      // A correctly routed file symbol proves the sender received READY.
+      // Stop replaying it immediately instead of waiting for block-zero FEC.
+      handshakeRef.current.fastReadyMac = undefined; handshakeRef.current.readyMessage = undefined; handshakeRef.current.outgoing = []
+      handshakeRef.current.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED')
+      setFileStatus('Sender received READY. Paired optical alignment detected; collecting encrypted manifest shards…')
+    }
     if (connectionMode === 'audio') {
       const calibration = readCalibrationFrameId(result.header.frameId)
       if (opticalLost.current && !calibration && result.header.frameId === 0 && calibrationMode.current !== 'transferring') { calibrationMode.current = 'idle'; selectedPaceCode.current = 0; calibrationSamples.current.clear() }
@@ -392,6 +423,11 @@ export function WorkerOpticalReceiver() {
       busy = false
       const now = performance.now(), result = event.data.result
       processed += 1
+      if (task === 'file' && connectionMode === 'audio' && profile.colorMode === 'rgb' && handshakeRef.current.state === 'WAITING_FOR_OFFER' && !result.ok && result.reason === 'payload-crc' && result.header?.profileId === opticalProfileNumber(profile) && (result.header.frameId >>> 24) === (RGB_BOOTSTRAP_FRAME_TAG >>> 24)) {
+        const current = qualityFeedbackRef.current
+        qualityFeedbackRef.current = current?.transferId === result.header.blockId ? { ...current, failures: Math.min(255, current.failures + 1) } : { transferId: result.header.blockId, failures: 1, nextAt: 0 }
+        if (qualityFeedbackRef.current.failures === 3) sendAcousticStatus()
+      }
       if (task === 'file') void acceptFileFrame(result)
       if (result.ok) valid += 1; else failed += 1
       let uniqueBytes = 0
@@ -412,14 +448,14 @@ export function WorkerOpticalReceiver() {
         const canvas = gridRef.current, dimensions = frameDimensions(profile)
         canvas.width = dimensions.width; canvas.height = dimensions.height
         const context = canvas.getContext('2d')
-        if (context) { const image = context.createImageData(canvas.width, canvas.height); for (let index = 0; index < result.sampledCells.length; index += 1) { const level = result.sampledCells[index] * (profile.bitsPerSymbol === 2 ? 85 : 255), offset = index * 4; image.data[offset] = level; image.data[offset + 1] = level; image.data[offset + 2] = level; image.data[offset + 3] = 255 } context.putImageData(image, 0, 0) }
+        if (context) { const image = context.createImageData(canvas.width, canvas.height), grid = { profile, width: dimensions.width, height: dimensions.height, cells: result.sampledCells }; for (let index = 0; index < result.sampledCells.length; index += 1) writeOpticalCellRgba(grid, index, image.data, index * 4); context.putImageData(image, 0, 0) }
       }
       if (now - lastUi > 250) {
         lastUi = now
         const boundary = result.boundary
         const dimensions = frameDimensions(profile)
         const pixelsPerCell = boundary ? Math.min(Math.hypot(boundary.topRight.x - boundary.topLeft.x, boundary.topRight.y - boundary.topLeft.y) / dimensions.width, Math.hypot(boundary.bottomLeft.x - boundary.topLeft.x, boundary.bottomLeft.y - boundary.topLeft.y) / dimensions.height) : 0
-        setStatus({ camera: `${video.videoWidth} × ${video.videoHeight}`, finder: event.data.finderStage, reason: result.ok ? 'CRC-valid optical frame' : result.reason, frame: result.ok ? result.header.frameId : -1, valid, failed, unique: seen.size, processingFps: history.length / 5, validFps: history.filter(item => item.valid).length / 5, usefulKBps: history.reduce((sum, item) => sum + item.bytes, 0) / 5120, decodeMs: event.data.decodeMs, acquireMs: event.data.acquireMs, drawMs: event.data.drawMs, readMs: event.data.readMs, sampleMs: event.data.sampleMs, crcMs: event.data.crcMs, pixelPath: event.data.pixelPath, gpuDiagnostic: event.data.gpuDiagnostic, pixelsPerCell, confidence: result.symbolConfidence || 0, deterministic: result.ok && isDeterministicPayload(result.payload, result.header.frameId), boundary: boundary ? `${Math.round(boundary.topLeft.x)},${Math.round(boundary.topLeft.y)} → ${Math.round(boundary.bottomRight.x)},${Math.round(boundary.bottomRight.y)}` : 'searching', fileSymbols: fileDecodeStats.current.symbols, invalidSymbols: fileDecodeStats.current.invalidSymbols, sessionRejects: fileDecodeStats.current.sessionRejects, manifestShards: fileDecodeStats.current.manifestShards, lastFileBlock: fileDecodeStats.current.lastBlock })
+        setStatus({ camera: `${video.videoWidth} × ${video.videoHeight}`, finder: event.data.finderStage, reason: result.ok ? 'CRC-valid optical frame' : result.reason, recovery: result.ok ? result.recovery || 'none' : 'none', frame: result.ok ? result.header.frameId : -1, valid, failed, unique: seen.size, processingFps: history.length / 5, validFps: history.filter(item => item.valid).length / 5, usefulKBps: history.reduce((sum, item) => sum + item.bytes, 0) / 5120, decodeMs: event.data.decodeMs, acquireMs: event.data.acquireMs, drawMs: event.data.drawMs, readMs: event.data.readMs, sampleMs: event.data.sampleMs, crcMs: event.data.crcMs, pixelPath: event.data.pixelPath, gpuDiagnostic: event.data.gpuDiagnostic, pixelsPerCell, confidence: result.symbolConfidence || 0, deterministic: result.ok && isDeterministicPayload(result.payload, result.header.frameId), boundary: boundary ? `${Math.round(boundary.topLeft.x)},${Math.round(boundary.topLeft.y)} → ${Math.round(boundary.bottomRight.x)},${Math.round(boundary.bottomRight.y)}` : 'searching', fileSymbols: fileDecodeStats.current.symbols, invalidSymbols: fileDecodeStats.current.invalidSymbols, sessionRejects: fileDecodeStats.current.sessionRejects, manifestShards: fileDecodeStats.current.manifestShards, lastFileBlock: fileDecodeStats.current.lastBlock })
       }
     }
     void (async () => {
@@ -457,7 +493,7 @@ export function WorkerOpticalReceiver() {
     <nav><button onClick={() => { resetFile(); setTask('file') }}>Receive files</button> <button onClick={() => { resetFile(); setTask('benchmark') }}>Link benchmark</button></nav>
     {task === 'file' && <label>Connection <select value={connectionMode} disabled={!!speaker.current || !!fileState.current.manifest} onChange={event => { resetFile(); setConnectionMode(event.target.value as ConnectionMode); setAudioPacketsSent(0) }}><option value="direct">Direct optical (existing)</option><option value="audio">Audio pairing + ACK</option></select></label>}
     {task === 'file' && connectionMode === 'audio' && <p><label><input type="checkbox" checked={handsFreePairing} onChange={event => setHandsFreePairing(event.target.checked)} /> Hands-free code continuation after 3 seconds (encrypted, but peer identity not verified)</label></p>}
-    <label>Optical profile <select value={profile.id} onChange={event => { resetFile(); setProfile(OPTICAL_PROFILES.find(item => item.id === event.target.value) || DEBUG_PROFILE) }}>{OPTICAL_PROFILES.map(item => <option key={item.id} value={item.id}>{item.gridWidth}×{item.gridHeight} / {item.bitsPerSymbol === 2 ? '4-level (experimental)' : 'binary'}</option>)}</select></label>
+    <label>Optical profile <select value={profile.id} onChange={event => { resetFile(); setProfile(OPTICAL_PROFILES.find(item => item.id === event.target.value) || DEBUG_PROFILE) }}>{OPTICAL_PROFILES.map(item => <option key={item.id} value={item.id}>{item.gridWidth}×{item.gridHeight} / {item.colorMode === 'rgb' ? 'RGB + black · robust 2×2 (experimental)' : item.bitsPerSymbol === 2 ? '4-level gray (experimental)' : 'binary'}</option>)}</select></label>
     <button onClick={() => workerRef.current?.postMessage({ reset: true, profileId: profile.id })}>Re-detect boundary</button>
     <button onClick={exportMetrics}>Export metrics JSON</button>
     {task === 'file' && <><button onClick={() => void startSpeaker()} disabled={!!speaker.current || verified.current || (connectionMode === 'audio' && diskStorage === 'checking')}>{connectionMode === 'audio' ? 'Enable receiver speaker' : 'Enable speaker feedback'}</button>{connectionMode === 'audio' && <p>Enable the speaker, then aim this camera at the sender’s full-screen optical offer. The receiver does not need a microphone.</p>}{connectionMode === 'audio' && handshakeState === 'AWAITING_USER_VERIFICATION' && <p role="alert">Pairing code on both devices: <strong style={{ fontSize: '1.4em' }}>{sas}</strong><br />{handsFreePairing ? `Continuing in ${verificationSeconds}s · peer identity unverified` : 'Compare the codes before accepting.'}<br /><button onClick={() => acceptSas(true)}>Codes match</button> <button onClick={cancelHandshake}>Cancel</button></p>}<p>{speakerStatus} · {audioPacketsSent} control packets sent{connectionMode === 'audio' && ` · secure handshake ${handshakeState}${responseRounds > 0 && handshakeState !== 'ESTABLISHED' ? ` · audio response round ${responseRounds}` : ''}${handshakeState === 'ESTABLISHED' ? ` · Encrypted · AES-256-GCM · ${sasManuallyVerifiedRef.current ? 'code manually confirmed' : 'peer identity unverified'}` : ''} · optical link ${opticalLink} · recommended optical pace ${recommendedPace || 'measuring'} FPS`}</p><p>{fileStatus} {downloadUrl && <a href={downloadUrl} download="optical-transfer.zip">Download verified ZIP</a>}</p>{!cameraActive && <p>Camera off after verified transfer. Select Receive files to start another.</p>}</>}
@@ -465,9 +501,10 @@ export function WorkerOpticalReceiver() {
     {task === 'file' && diskStorage === 'memory' && <p role="alert">This browser has no writable local storage for large ZIPs. It can receive up to 16 MiB in memory. Use a normal browser window with IndexedDB or browser-private file storage for larger transfers. {storageProblem}</p>}
     {task === 'file' && fileProgress.totalBytes === 0 && <p>0 ZIP bytes received · {status.sessionRejects > 0 ? 'optical frames belong to a different audio session; re-pair the sender' : status.manifestShards > 0 ? `waiting for transfer manifest (${status.manifestShards} of 8 distinct symbols)` : 'waiting for transfer manifest'}</p>}
     {task === 'file' && fileProgress.totalBytes > 0 && <div style={{ margin: '16px 0' }}><p><strong>{fileProgress.receivedBytes.toLocaleString()} / {fileProgress.totalBytes.toLocaleString()} ZIP bytes received ({(100 * fileProgress.receivedBytes / fileProgress.totalBytes).toFixed(1)}%)</strong></p><progress aria-label="ZIP bytes received" value={fileProgress.receivedBytes} max={fileProgress.totalBytes} style={{ width: '100%', height: 20 }} /><p>Blocks {fileProgress.blocks} / {fileProgress.totalBlocks} · average {(fileProgress.receivedBytes / Math.max(0.001, fileProgress.elapsedSeconds) / 1e6).toFixed(3)} MB/s · {fileProgress.verifiedBytes ? 'SHA-256 verified' : fileProgress.blocks < fileProgress.totalBlocks ? 'receiving missing blocks; SHA-256 starts when all are stored' : 'all blocks stored; checking local SHA-256'}</p></div>}
+    {profile.colorMode === 'rgb' && status.recovery !== 'none' && <p>RGB optical correction used: {status.recovery}</p>}
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 20, marginTop: 16 }}>
       <video ref={videoRef} muted playsInline style={{ width: '100%', background: '#111' }} />
-      <aside><h2>Diagnostics</h2><p>{status.reason}</p><dl><dt>Camera</dt><dd>{status.camera}</dd><dt>Finder</dt><dd>{status.finder}</dd><dt>Detected boundary</dt><dd>{status.boundary}</dd><dt>Camera pixels / cell</dt><dd>{status.pixelsPerCell ? `${status.pixelsPerCell.toFixed(1)}${status.pixelsPerCell < 6 ? ' · move camera closer' : ''}` : '—'}</dd><dt>Frame</dt><dd>{status.frame < 0 ? '—' : status.frame}</dd><dt>Processed / valid FPS</dt><dd>{status.processingFps.toFixed(1)} / {status.validFps.toFixed(1)}</dd><dt>Decode time</dt><dd>{status.decodeMs.toFixed(1)} ms</dd><dt>Pixel path</dt><dd>{status.pixelPath}</dd><dt>GPU candidate</dt><dd>{status.gpuDiagnostic}</dd><dt>Stages</dt><dd>find {status.acquireMs.toFixed(0)} · draw {status.drawMs.toFixed(0)} · read {status.readMs.toFixed(0)} · sample {status.sampleMs.toFixed(0)} · CRC {status.crcMs.toFixed(0)} ms</dd><dt>Unique optical bytes</dt><dd>{status.usefulKBps.toFixed(1)} KB/s</dd><dt>Valid / failed</dt><dd>{status.valid} / {status.failed}</dd><dt>Unique frames</dt><dd>{status.unique}</dd>{task === 'file' && <><dt>File symbols decoded</dt><dd>{status.fileSymbols}</dd><dt>Wrong audio session</dt><dd>{status.sessionRejects}</dd><dt>Invalid file symbols</dt><dd>{status.invalidSymbols}</dd><dt>Manifest shards</dt><dd>{status.manifestShards} / 8</dd><dt>Last file block</dt><dd>{status.lastFileBlock < 0 ? '—' : status.lastFileBlock}</dd></>}<dt>Symbol confidence</dt><dd>{(status.confidence * 100).toFixed(0)}%</dd>{task === 'benchmark' && <><dt>Benchmark payload</dt><dd>{status.deterministic ? 'verified' : '—'}</dd></>}</dl><canvas ref={gridRef} aria-label="Sampled optical grid" style={{ width: '100%', imageRendering: 'pixelated', border: '1px solid #777' }} /></aside>
+      <aside><h2>Diagnostics</h2><p>{status.reason}</p>{profile.bitsPerSymbol === 2 && status.pixelsPerCell > 0 && status.pixelsPerCell < 4 && <p role="alert">Four-level grid is too small in the camera image. Move closer or use the same binary profile on both devices.</p>}<dl><dt>Camera</dt><dd>{status.camera}</dd><dt>Finder</dt><dd>{status.finder}</dd><dt>Detected boundary</dt><dd>{status.boundary}</dd><dt>Camera pixels / cell</dt><dd>{status.pixelsPerCell ? `${status.pixelsPerCell.toFixed(1)}${status.pixelsPerCell < 6 ? ' · move camera closer' : ''}` : '—'}</dd><dt>Frame</dt><dd>{status.frame < 0 ? '—' : status.frame}</dd><dt>Processed / valid FPS</dt><dd>{status.processingFps.toFixed(1)} / {status.validFps.toFixed(1)}</dd><dt>Decode time</dt><dd>{status.decodeMs.toFixed(1)} ms</dd><dt>Pixel path</dt><dd>{status.pixelPath}</dd><dt>GPU candidate</dt><dd>{status.gpuDiagnostic}</dd><dt>Stages</dt><dd>find {status.acquireMs.toFixed(0)} · draw {status.drawMs.toFixed(0)} · read {status.readMs.toFixed(0)} · sample {status.sampleMs.toFixed(0)} · CRC {status.crcMs.toFixed(0)} ms</dd><dt>Unique optical bytes</dt><dd>{status.usefulKBps.toFixed(1)} KB/s</dd><dt>Valid / failed</dt><dd>{status.valid} / {status.failed}</dd><dt>Unique frames</dt><dd>{status.unique}</dd>{task === 'file' && <><dt>File symbols decoded</dt><dd>{status.fileSymbols}</dd><dt>Wrong audio session</dt><dd>{status.sessionRejects}</dd><dt>Invalid file symbols</dt><dd>{status.invalidSymbols}</dd><dt>Manifest shards</dt><dd>{status.manifestShards} / 8</dd><dt>Last file block</dt><dd>{status.lastFileBlock < 0 ? '—' : status.lastFileBlock}</dd></>}<dt>Symbol confidence</dt><dd>{(status.confidence * 100).toFixed(0)}%</dd>{task === 'benchmark' && <><dt>Benchmark payload</dt><dd>{status.deterministic ? 'verified' : '—'}</dd></>}</dl><canvas ref={gridRef} aria-label="Sampled optical grid" style={{ width: '100%', imageRendering: 'pixelated', border: '1px solid #777' }} /></aside>
     </div>
   </main>
 }

@@ -15,6 +15,10 @@ export const HANDSHAKE_CAPABILITY_OCTAL_FSK = 8
 export const HANDSHAKE_CAPABILITY_OCTAL_CONTROL = 16
 /** Separate from eight-tone: older eight-tone peers still require AHY1 READY. */
 export const HANDSHAKE_CAPABILITY_COMPACT_READY = 32
+/** Full 128-bit READY MAC in two CRC-protected acoustic packets. */
+export const HANDSHAKE_CAPABILITY_FAST_READY = 64
+/** Negotiated 12 ms symbols for eight-tone response, READY, and runtime control. */
+export const HANDSHAKE_CAPABILITY_FAST_OCTAL = 128
 export type AcousticToneCount = 2 | 4 | 8
 
 export interface HandshakeOffer { protocolVersion: number; sessionId: Uint8Array; senderEphemeralPublicKey: Uint8Array; senderNonce: Uint8Array; capabilities: number }
@@ -65,6 +69,7 @@ export function readyConfirm(key: Uint8Array, transcriptHash: Uint8Array) { retu
 /** 128-bit truncated HMAC remains far stronger than CRC or a short session ID;
  * the full cryptographic transcript is covered by the HMAC input. */
 export function readyConfirmCompact(key: Uint8Array, transcriptHash: Uint8Array) { return hmacSha256(key, transcriptHash, utf8ToBytes('receiver-ready/v2')).slice(0, 16) }
+export function readyConfirmFast(key: Uint8Array, transcriptHash: Uint8Array) { return hmacSha256(key, transcriptHash, utf8ToBytes('receiver-ready/v3')).slice(0, 16) }
 export function equalBytes(left: Uint8Array, right: Uint8Array) { if (left.length !== right.length) return false; let different = 0; for (let i = 0; i < left.length; i += 1) different |= left[i] ^ right[i]; return different === 0 }
 
 export function encodeHandshakeOffer(offer: HandshakeOffer) { check(offer.sessionId, 16, 'session ID'); check(offer.senderEphemeralPublicKey, 32, 'sender public key'); check(offer.senderNonce, 16, 'sender nonce'); return concatBytes(HANDSHAKE_OFFER_MAGIC, Uint8Array.of(offer.protocolVersion), offer.sessionId, offer.senderEphemeralPublicKey, offer.senderNonce, u32(offer.capabilities)) }

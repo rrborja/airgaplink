@@ -1,10 +1,10 @@
 import { CONTROL_MAX_PAYLOAD, ControlType, FSK_SYMBOL_SECONDS, packCompactControlPacket, packControlPacket, unpackCompactControlPacket, unpackControlPacket, type ControlPacket } from './control.ts'
 
-/** One of eight evenly spaced tones per 16 ms symbol, three bits each.
- * The 250 Hz spacing is exactly four cycles per symbol. Packet bytes and CRC
- * remain identical to the two- and four-tone physical modes. */
+/** Eight tones carry three bits per symbol. Fast mode shortens airtime without
+ * changing the packet body, CRC, tone alphabet, or legacy 16 ms mode. */
 export const OCTAL_FSK_TONES_HZ = [1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750] as const
 export const OCTAL_FSK_SYNC_HZ = 3250
+export const OCTAL_FAST_SYMBOL_SECONDS = 0.012
 const PREAMBLE = Uint8Array.of(0xe2, 0x5a, 0x97) // 24 bits = eight three-bit symbols
 const GRAY = [0, 1, 3, 2, 6, 7, 5, 4] as const
 const GRAY_TO_TONE = [0, 1, 3, 2, 7, 6, 4, 5] as const
@@ -22,10 +22,10 @@ function toneEnergy(samples: Float32Array, start: number, length: number, freque
   return previous * previous + beforePrevious * beforePrevious - coefficient * previous * beforePrevious
 }
 
-function encodeBody(body: Uint8Array, sampleRate: number) {
+function encodeBody(body: Uint8Array, sampleRate: number, symbolSeconds: number) {
   const bytes = new Uint8Array(PREAMBLE.length + body.length)
   bytes.set(PREAMBLE); bytes.set(body, PREAMBLE.length)
-  const symbolSamples = Math.round(sampleRate * FSK_SYMBOL_SECONDS), edgeSilence = Math.round(sampleRate * 0.008)
+  const symbolSamples = Math.round(sampleRate * symbolSeconds), edgeSilence = Math.round(sampleRate * 0.008)
   const output = new Float32Array(edgeSilence * 2 + SYNC_SYMBOLS * symbolSamples + Math.ceil(bytes.length * 8 / 3) * symbolSamples)
   let phase = 0
   const tone = (start: number, length: number, frequency: number) => {
@@ -50,17 +50,17 @@ function encodeBody(body: Uint8Array, sampleRate: number) {
   return output
 }
 
-export function encodeOctalFskPacket(packet: ControlPacket, sampleRate = 48000) { return encodeBody(packControlPacket(packet), sampleRate) }
-export function encodeOctalCompactFskPacket(packet: ControlPacket, sampleRate = 48000) { return encodeBody(packCompactControlPacket(packet), sampleRate) }
-export function encodeOctalFskHandshakePacket(packet: ControlPacket, sampleRate = 48000) {
+export function encodeOctalFskPacket(packet: ControlPacket, sampleRate = 48000, symbolSeconds = FSK_SYMBOL_SECONDS) { return encodeBody(packControlPacket(packet), sampleRate, symbolSeconds) }
+export function encodeOctalCompactFskPacket(packet: ControlPacket, sampleRate = 48000, symbolSeconds = FSK_SYMBOL_SECONDS) { return encodeBody(packCompactControlPacket(packet), sampleRate, symbolSeconds) }
+export function encodeOctalFskHandshakePacket(packet: ControlPacket, sampleRate = 48000, symbolSeconds = FSK_SYMBOL_SECONDS) {
   if (packet.type !== ControlType.HANDSHAKE_FRAGMENT) throw new Error('Eight-tone handshake encoder requires a fragment')
-  return encodeOctalFskPacket(packet, sampleRate)
+  return encodeOctalFskPacket(packet, sampleRate, symbolSeconds)
 }
 
 /** Sync tone + preamble + CRC must all match. Search eight clock phases to
  * tolerate capture start offsets without changing the legacy packet format. */
-export function decodeOctalFskSamples(samples: Float32Array, sampleRate: number): ControlPacket[] {
-  const symbolSamples = Math.round(sampleRate * FSK_SYMBOL_SECONDS)
+export function decodeOctalFskSamples(samples: Float32Array, sampleRate: number, symbolSeconds = FSK_SYMBOL_SECONDS): ControlPacket[] {
+  const symbolSamples = Math.round(sampleRate * symbolSeconds)
   const preambleSymbols = new Uint8Array(8)
   for (let symbol = 0; symbol < 8; symbol += 1) for (let bit = 0; bit < 3; bit += 1) preambleSymbols[symbol] = (preambleSymbols[symbol] << 1) | ((PREAMBLE[(symbol * 3 + bit) >>> 3] >>> (7 - ((symbol * 3 + bit) & 7))) & 1)
   const found = new Map<string, { packet: ControlPacket; position: number }>()

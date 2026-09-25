@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
-import { DEBUG_PROFILE, decodeOpticalCells, deterministicPayload, encodeOpticalFrame, framePayloadCapacity } from './index.ts'
+import { DEBUG_PROFILE, RGB4_200_PROFILE, decodeOpticalCells, deterministicPayload, encodeOpticalFrame, framePayloadCapacity } from './index.ts'
 import { OpticalBlockCollector, ReedSolomonBlockCodec, SYMBOL_HEADER_BYTES, TRANSFER_MANIFEST_BYTES, packOpticalSymbol, packTransferManifest, unpackOpticalSymbol, unpackTransferManifest } from './fec.ts'
 
 const engine = ReedSolomonErasure.fromBytes(readFileSync(new URL(import.meta.resolve('@digitaldefiance/reed-solomon-erasure.wasm/wasm'))))
@@ -41,4 +41,38 @@ for (let blockId = 0; blockId < totalBlocks; blockId += 1) {
   result.set(bytes, cursor); cursor += bytes.length
 }
 if (cursor !== archive.length || !createHash('sha256').update(result).digest().equals(hash)) throw new Error('Final optical archive hash mismatch')
+// RGB's lower effective payload capacity must still fit the unchanged optical
+// symbol/FEC path. Corrupt one spatial copy in every received RGB frame.
+const rgbArchive = deterministicPayload(0x8877, 22000), rgbHash = createHash('sha256').update(rgbArchive).digest()
+const rgbShardBytes = Math.floor((framePayloadCapacity(RGB4_200_PROFILE) - SYMBOL_HEADER_BYTES) / 32) * 32
+const rgbBlockBytes = 8 * rgbShardBytes - 1, rgbBlocks = Math.ceil((TRANSFER_MANIFEST_BYTES + rgbArchive.length) / rgbBlockBytes)
+const rgbSource = new Uint8Array(TRANSFER_MANIFEST_BYTES + rgbArchive.length), rgbTransferId = 0x5823bc76
+rgbSource.set(packTransferManifest({ transferId: rgbTransferId, archiveBytes: rgbArchive.length, blockBytes: rgbBlockBytes, totalBlocks: rgbBlocks, sha256: rgbHash })); rgbSource.set(rgbArchive, TRANSFER_MANIFEST_BYTES)
+const rgbRecovered = new Map<number, Uint8Array>()
+for (let blockId = 0; blockId < rgbBlocks; blockId += 1) {
+  const block = codec.encode(rgbSource.subarray(blockId * rgbBlockBytes, Math.min((blockId + 1) * rgbBlockBytes, rgbSource.length)), rgbShardBytes)
+  const collector = new OpticalBlockCollector(new ReedSolomonBlockCodec(ReedSolomonErasure.fromBytes(wasmBytes)), rgbTransferId, blockId)
+  for (let index = 0; index < block.symbols.length; index += 1) {
+    if (index === 2 || index === 5) continue
+    const packet = packOpticalSymbol({ transferId: rgbTransferId, blockId, index, sourceCount: 8, repairCount: 2, sourceBytes: block.sourceBytes, bytes: block.symbols[index] })
+    const frame = encodeOpticalFrame(packet, blockId * 20 + index, blockId, RGB4_200_PROFILE)
+    for (let dy = 0; dy < 2; dy += 1) for (let dx = 0; dx < 2; dx += 1) frame.cells[(16 + dy) * frame.width + 16 + dx] ^= 3
+    const decoded = decodeOpticalCells(frame.cells, RGB4_200_PROFILE)
+    if (!decoded.ok || decoded.recovery !== 'spatial-copy') throw new Error('RGB data frame did not recover its damaged first copy')
+    const symbol = unpackOpticalSymbol(decoded.payload)
+    if (!symbol) throw new Error('Recovered RGB optical symbol invalid')
+    const recovered = collector.add(symbol)
+    if (recovered) rgbRecovered.set(blockId, recovered)
+  }
+  if (!rgbRecovered.has(blockId)) throw new Error(`RGB FEC block ${blockId} was not reconstructed`)
+}
+const rgbManifest = unpackTransferManifest(rgbRecovered.get(0)!)
+if (!rgbManifest || rgbManifest.archiveBytes !== rgbArchive.length || rgbManifest.totalBlocks !== rgbBlocks) throw new Error('RGB manifest failed')
+const rgbResult = new Uint8Array(rgbArchive.length)
+let rgbCursor = 0
+for (let blockId = 0; blockId < rgbBlocks; blockId += 1) {
+  const bytes = blockId === 0 ? rgbRecovered.get(blockId)!.subarray(TRANSFER_MANIFEST_BYTES) : rgbRecovered.get(blockId)!
+  rgbResult.set(bytes, rgbCursor); rgbCursor += bytes.length
+}
+if (rgbCursor !== rgbArchive.length || !createHash('sha256').update(rgbResult).digest().equals(rgbHash)) throw new Error('RGB optical archive hash mismatch')
 console.log(JSON.stringify({ result: 'ok', archiveBytes: archive.length, blocks: totalBlocks, droppedFrames: dropped, sha256Verified: true }))

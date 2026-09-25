@@ -17,6 +17,15 @@ export function fragmentHandshakeMessage(transferId: number, sequenceStart: numb
     return { type: ControlType.HANDSHAKE_FRAGMENT, transferId, sequence: (sequenceStart + index) & 0xffff, payload }
   })
 }
+/** Change the on-air position of every fragment on retry. A speaker/mic path
+ * that consistently loses the first or last tone can still complete because
+ * the reassembler accepts the fragments in any order. */
+export function rotateHandshakePackets(packets: ControlPacket[], retryRound: number): ControlPacket[] {
+  if (!Number.isInteger(retryRound) || retryRound < 0) throw new Error('Invalid handshake retry round')
+  if (packets.length < 2) return packets.slice()
+  const offset = retryRound * 7 % packets.length
+  return packets.slice(offset).concat(packets.slice(0, offset))
+}
 export function parseHandshakeFragment(packet: ControlPacket): AcousticFragment | null {
   if (packet.type !== ControlType.HANDSHAKE_FRAGMENT || packet.payload.length < 7 || packet.payload.length > CONTROL_MAX_PAYLOAD) return null
   const view = new DataView(packet.payload.buffer, packet.payload.byteOffset, packet.payload.byteLength), sessionTag = view.getUint16(0), messageType = packet.payload[2], index = packet.payload[3], count = packet.payload[4], totalLength = packet.payload[5], data = packet.payload.slice(6)

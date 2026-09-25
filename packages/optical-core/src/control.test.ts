@@ -1,5 +1,6 @@
 import { ControlType, decodeFskSamples, decodeQuadFskHandshakeSamples, decodeQuadFskSamples, encodeCompactFskPacket, encodeFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, makeBlockStatusPayload, makeCompactStatusPayload, packCompactControlPacket, readBlockStatusPayload, readCompactStatusPayload } from './control.ts'
-import { decodeOctalFskSamples, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket } from './octal-fsk.ts'
+import { OCTAL_FAST_SYMBOL_SECONDS, decodeOctalFskSamples, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket } from './octal-fsk.ts'
+import { OPTICAL_OFFER_HOLD_MS, makeOpticalQualityPayload, nextOpticalOfferHold, readOpticalQualityPayload } from './optical-feedback.ts'
 
 const payload = makeBlockStatusPayload(96, 0xf0a20cc3)
 const packet = { type: ControlType.BLOCK_STATUS, transferId: 0x9127ea45, sequence: 44, payload }
@@ -92,12 +93,33 @@ const octalDecoded = decodeOctalFskSamples(shiftedOctal, 48000)
 if (octalDecoded.length !== 1 || octalDecoded[0].sequence !== fragment.sequence || octalDecoded[0].payload.some((value, index) => value !== fragment.payload[index])) throw new Error('Eight-tone handshake packet failed noisy, offset round trip')
 const octal44100 = decodeOctalFskSamples(encodeOctalFskHandshakePacket(fragment, 44100), 44100)
 if (octal44100.length !== 1 || octal44100[0].sequence !== fragment.sequence) throw new Error('Eight-tone packet failed at 44.1 kHz')
+for (const sampleRate of [44100, 48000]) {
+  const fastSound = encodeOctalFskHandshakePacket(fragment, sampleRate, OCTAL_FAST_SYMBOL_SECONDS)
+  const shiftedFast = new Float32Array(fastSound.length + Math.round(sampleRate * 0.037))
+  shiftedFast.set(fastSound, shiftedFast.length - fastSound.length)
+  for (let index = 0; index < shiftedFast.length; index += 1) shiftedFast[index] += (((index * 17) % 31) - 15) * 0.0006
+  const decoded = decodeOctalFskSamples(shiftedFast, sampleRate, OCTAL_FAST_SYMBOL_SECONDS)
+  if (decoded.length !== 1 || decoded[0].sequence !== fragment.sequence || decoded[0].payload.some((value, index) => value !== fragment.payload[index])) throw new Error('Fast eight-tone handshake failed noisy, offset round trip')
+  if (decodeOctalFskSamples(fastSound, sampleRate).length) throw new Error('Fast eight-tone packet was accepted at legacy symbol rate')
+}
 const octalCompactSound = encodeOctalCompactFskPacket(compactPacket, 48000)
 const octalCompactDecoded = decodeOctalFskSamples(octalCompactSound, 48000)
 const octalCompactStatus = octalCompactDecoded.length === 1 ? readCompactStatusPayload(octalCompactDecoded[0].payload) : null
 if (octalCompactDecoded.length !== 1 || octalCompactDecoded[0].sequence !== compactPacket.sequence || octalCompactStatus?.firstMissing !== 12345 || octalCompactStatus.bitmap !== 0b1010 || octalCompactStatus.paceCode !== 4) throw new Error('Eight-tone compact ACK failed')
+const fastCompactSound = encodeOctalCompactFskPacket(compactPacket, 48000, OCTAL_FAST_SYMBOL_SECONDS)
+const fastCompactDecoded = decodeOctalFskSamples(fastCompactSound, 48000, OCTAL_FAST_SYMBOL_SECONDS)
+if (fastCompactDecoded.length !== 1 || fastCompactDecoded[0].sequence !== compactPacket.sequence || readCompactStatusPayload(fastCompactDecoded[0].payload)?.firstMissing !== 12345) throw new Error('Fast eight-tone compact ACK failed')
+if (fastCompactSound.length >= octalCompactSound.length * 0.8) throw new Error('Fast eight-tone compact ACK did not shorten airtime')
 const octalPause = decodeOctalFskSamples(encodeOctalFskPacket(quadPause, 48000), 48000)
 if (octalPause.length !== 1 || octalPause[0].type !== ControlType.PAUSE) throw new Error('Eight-tone normal runtime control failed')
+const qualityPacket = { type: ControlType.OPTICAL_QUALITY, transferId: sessionId, sequence: 91, payload: makeOpticalQualityPayload(6, 2) }
+const qualitySound = encodeOctalFskPacket(qualityPacket, 48000)
+const qualityDecoded = decodeOctalFskSamples(qualitySound, 48000)
+if (qualityDecoded.length !== 1 || qualityDecoded[0].type !== ControlType.OPTICAL_QUALITY || qualityDecoded[0].transferId !== sessionId || readOpticalQualityPayload(qualityDecoded[0].payload)?.holdCode !== 2 || OPTICAL_OFFER_HOLD_MS[2] !== 1500) throw new Error('RGB quality feedback failed eight-tone round trip')
+if (nextOpticalOfferHold(400, sessionId, 6, qualityDecoded[0]) !== 1500 || nextOpticalOfferHold(1500, sessionId, 6, qualityDecoded[0]) !== 1500 || nextOpticalOfferHold(400, sessionId + 1, 6, qualityDecoded[0]) !== 400 || nextOpticalOfferHold(400, sessionId, 5, qualityDecoded[0]) !== 400) throw new Error('RGB quality hint was not session/profile bound or allowed a faster offer')
+const damagedQuality = qualitySound.slice(); damagedQuality.fill(0, Math.floor(damagedQuality.length * 0.55), Math.floor(damagedQuality.length * 0.75))
+if (decodeOctalFskSamples(damagedQuality, 48000).length) throw new Error('Corrupted RGB quality feedback passed CRC')
+if (readOpticalQualityPayload(Uint8Array.of(1, 6, 1, 3)) || readOpticalQualityPayload(Uint8Array.of(1, 6, 2, 1))) throw new Error('Malformed RGB quality feedback accepted')
 const adjacentOctal = new Float32Array(octalCompactSound.length + 720 + octalSound.length)
 adjacentOctal.set(octalCompactSound); adjacentOctal.set(octalSound, octalCompactSound.length + 720)
 const adjacentOctalDecoded = decodeOctalFskSamples(adjacentOctal, 48000)
@@ -108,4 +130,4 @@ if (decodeOctalFskSamples(octalWithoutSync, 48000).length) throw new Error('Eigh
 const octalCorrupted = octalCompactSound.slice(); octalCorrupted.fill(0, Math.floor(octalCorrupted.length * 0.55), Math.floor(octalCorrupted.length * 0.75))
 if (decodeOctalFskSamples(octalCorrupted, 48000).length) throw new Error('Corrupted eight-tone ACK passed CRC')
 if (octalCompactSound.length / 48000 !== 0.784 || octalCompactSound.length >= quadCompactSound.length * 0.7) throw new Error('Eight-tone compact ACK duration regressed')
-console.log(JSON.stringify({ result: 'ok', bitsPerSecond: Math.round(1 / 0.016), packetSeconds: Number((encoded.length / 48000).toFixed(2)), compactAckSeconds: Number((compactSound.length / 48000).toFixed(2)), quadCompactAckSeconds: Number((quadCompactSound.length / 48000).toFixed(2)), octalCompactAckSeconds: Number((octalCompactSound.length / 48000).toFixed(3)) }))
+console.log(JSON.stringify({ result: 'ok', bitsPerSecond: Math.round(1 / 0.016), packetSeconds: Number((encoded.length / 48000).toFixed(2)), compactAckSeconds: Number((compactSound.length / 48000).toFixed(2)), quadCompactAckSeconds: Number((quadCompactSound.length / 48000).toFixed(2)), octalCompactAckSeconds: Number((octalCompactSound.length / 48000).toFixed(3)), fastOctalCompactAckSeconds: Number((fastCompactSound.length / 48000).toFixed(3)) }))

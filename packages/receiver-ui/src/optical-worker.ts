@@ -1,4 +1,4 @@
-import { DEBUG_PROFILE, OPTICAL_PROFILES, decodeOpticalCells, detectOpticalBoundary, frameDimensions, sampleOpticalCells, type FinderReport, type OpticalBoundary, type OpticalImage, type OpticalImageDecode, type Point } from '@qrcopy/optical-core'
+import { DEBUG_PROFILE, OPTICAL_PROFILES, RGB_BOOTSTRAP_FRAME_TAG, decodeOpticalCells, detectOpticalBoundary, frameDimensions, sampleOpticalCells, type FinderReport, type OpticalBoundary, type OpticalImage, type OpticalImageDecode, type Point } from '@qrcopy/optical-core'
 import { GpuOpticalSampler } from './gpu-optical-sampler'
 
 // File pixels stay inside this worker and are never supplied to a network API.
@@ -88,7 +88,9 @@ async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; res
     const width = right - x, height = bottom - y
     if (width > 0 && height > 0) {
       const pixelsPerCell = Math.min(Math.hypot(boundary.topRight.x - boundary.topLeft.x, boundary.topRight.y - boundary.topLeft.y) / (profile.gridWidth + 32), Math.hypot(boundary.bottomLeft.x - boundary.topLeft.x, boundary.bottomLeft.y - boundary.topLeft.y) / (profile.gridHeight + 32))
-      const scale = Math.min(1, 5.5 / Math.max(1, pixelsPerCell))
+      // RGB needs the camera's native color samples. Canvas downscaling blends
+      // adjacent display primaries before the macrocell center is classified.
+      const scale = profile.colorMode === 'rgb' ? 1 : Math.min(1, 5.5 / Math.max(1, pixelsPerCell))
       const scaledWidth = Math.max(1, Math.round(width * scale)), scaledHeight = Math.max(1, Math.round(height * scale))
       if (!cropCanvas || cropCanvas.width !== scaledWidth || cropCanvas.height !== scaledHeight) {
         cropCanvas = new OffscreenCanvas(scaledWidth, scaledHeight)
@@ -96,7 +98,7 @@ async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; res
       }
       if (cropContext) {
         let image: OpticalImage | undefined
-        if (grayAvailable && scale === 1) {
+        if (grayAvailable && scale === 1 && profile.colorMode !== 'rgb') {
           const readStart = performance.now()
           try {
             const frame = new VideoFrame(bitmap, { timestamp: 0 })
@@ -142,7 +144,19 @@ async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; res
             gpuDiagnostic += ` · Δ${(100 * different / sampled.cells.length).toFixed(0)}%`
           }
           const crcStart = performance.now()
-          result = { ...decodeOpticalCells(sampled.cells, profile), boundary, sampledCells: sampled.cells, symbolConfidence: sampled.symbolConfidence }
+          let decoded = decodeOpticalCells(sampled.cells, profile)
+          // During first contact the optical offer is small and repeated in
+          // space. Try nearby sub-cell sampling phases before reporting a CRC
+          // failure; the metadata/finder samples remain at their original phase.
+          if (!decoded.ok && decoded.reason === 'payload-crc' && profile.colorMode === 'rgb' && decoded.header && (decoded.header.frameId >>> 24) === (RGB_BOOTSTRAP_FRAME_TAG >>> 24) && decoded.header.payloadLength <= 512) {
+            for (const [dx, dy] of [[-0.2, 0], [0.2, 0], [0, -0.2], [0, 0.2], [-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2], [0.2, 0.2]]) {
+              const retry = sampleOpticalCells(image, local, profile, { x: dx, y: dy })
+              if (!retry) continue
+              const candidate = decodeOpticalCells(retry.cells, profile)
+              if (candidate.ok) { sampled = retry; decoded = { ...candidate, recovery: 'phase' }; break }
+            }
+          }
+          result = { ...decoded, boundary, sampledCells: sampled.cells, symbolConfidence: sampled.symbolConfidence }
           crcMs = performance.now() - crcStart
         }
       }
@@ -159,7 +173,7 @@ async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; res
   }
   // The sampled grid is only needed for a UI snapshot; don't copy it every frame.
   const diagnosticsGrid = result.sampledCells && ++decodedCount % 25 === 0 ? result.sampledCells : undefined
-  self.postMessage({ result: { ...result, sampledCells: diagnosticsGrid }, finderStage, decodeMs: performance.now() - started, acquireMs, drawMs, readMs, sampleMs, crcMs, pixelPath: usedGpu ? 'GPU symbol grid' : grayAvailable ? 'Y plane' : 'Canvas RGBA', gpuDiagnostic, sentAt: data.sentAt })
+  self.postMessage({ result: { ...result, sampledCells: diagnosticsGrid }, finderStage, decodeMs: performance.now() - started, acquireMs, drawMs, readMs, sampleMs, crcMs, pixelPath: usedGpu ? 'GPU symbol grid' : profile.colorMode !== 'rgb' && grayAvailable ? 'Y plane' : 'Canvas RGBA', gpuDiagnostic, sentAt: data.sentAt })
 }
 
 self.onmessage = (event: MessageEvent<{ bitmap?: ImageBitmap; profileId: string; reset?: boolean; sentAt?: number }>) => { void processFrame(event.data) }
