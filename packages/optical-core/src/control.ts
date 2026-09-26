@@ -1,6 +1,6 @@
 /** Physical speaker-to-microphone control only. No archive bytes or file metadata
  * are accepted by this packet format. */
-export const ControlType = { HELLO: 1, READY: 2, PROFILE_SELECTED: 3, BLOCK_STATUS: 4, TRANSFER_COMPLETE: 5, PAUSE: 6, RESUME: 7, CANCEL: 8, CALIBRATION_SELECTED: 9, HANDSHAKE_FRAGMENT: 10, HANDSHAKE_COMPLETE: 11, OPTICAL_QUALITY: 12 } as const
+export const ControlType = { HELLO: 1, READY: 2, PROFILE_SELECTED: 3, BLOCK_STATUS: 4, TRANSFER_COMPLETE: 5, PAUSE: 6, RESUME: 7, CANCEL: 8, CALIBRATION_SELECTED: 9, HANDSHAKE_FRAGMENT: 10, HANDSHAKE_COMPLETE: 11, OPTICAL_QUALITY: 12, HANDSHAKE_DENSE_FRAGMENT: 13, ACOUSTIC_PROBE: 14 } as const
 export type ControlType = typeof ControlType[keyof typeof ControlType]
 export interface ControlPacket { type: ControlType; transferId: number; sequence: number; payload: Uint8Array }
 const CONTROL_MAGIC = 0xa55a
@@ -40,7 +40,7 @@ export function unpackControlPacket(bytes: Uint8Array): ControlPacket | null {
   if (bytes.length < 13 || bytes.length > 13 + CONTROL_MAX_PAYLOAD) return null
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (view.getUint16(0) !== CONTROL_MAGIC || bytes[2] !== CONTROL_VERSION || bytes[10] !== bytes.length - 13 || view.getUint16(bytes.length - 2) !== crc16(bytes.subarray(0, bytes.length - 2))) return null
-  if (bytes[3] < ControlType.HELLO || bytes[3] > ControlType.OPTICAL_QUALITY) return null
+  if (bytes[3] < ControlType.HELLO || bytes[3] > ControlType.ACOUSTIC_PROBE) return null
   return { type: bytes[3] as ControlType, transferId: view.getUint32(4), sequence: view.getUint16(8), payload: bytes.slice(11, bytes.length - 2) }
 }
 
@@ -144,7 +144,7 @@ function encodeQuadFskBody(body: Uint8Array, sampleRate: number) {
 export function encodeQuadFskPacket(packet: ControlPacket, sampleRate = 48000) { return encodeQuadFskBody(packControlPacket(packet), sampleRate) }
 export function encodeQuadCompactFskPacket(packet: ControlPacket, sampleRate = 48000) { return encodeQuadFskBody(packCompactControlPacket(packet), sampleRate) }
 export function encodeQuadFskHandshakePacket(packet: ControlPacket, sampleRate = 48000) {
-  if (packet.type !== ControlType.HANDSHAKE_FRAGMENT) throw new Error('Four-tone handshake encoder requires a fragment')
+  if (packet.type !== ControlType.HANDSHAKE_FRAGMENT && packet.type !== ControlType.HANDSHAKE_DENSE_FRAGMENT) throw new Error('Four-tone handshake encoder requires a fragment')
   return encodeQuadFskPacket(packet, sampleRate)
 }
 
@@ -202,7 +202,7 @@ export function decodeQuadFskSamples(samples: Float32Array, sampleRate: number):
   }
   return [...found.values()].sort((left, right) => left.position - right.position).map(item => item.packet)
 }
-export function decodeQuadFskHandshakeSamples(samples: Float32Array, sampleRate: number) { return decodeQuadFskSamples(samples, sampleRate).filter(packet => packet.type === ControlType.HANDSHAKE_FRAGMENT) }
+export function decodeQuadFskHandshakeSamples(samples: Float32Array, sampleRate: number) { return decodeQuadFskSamples(samples, sampleRate).filter(packet => packet.type === ControlType.HANDSHAKE_FRAGMENT || packet.type === ControlType.HANDSHAKE_DENSE_FRAGMENT) }
 
 /** Search several clock phases; CRC prevents noise from becoming a control event. */
 export function decodeFskSamples(samples: Float32Array, sampleRate: number): ControlPacket[] {

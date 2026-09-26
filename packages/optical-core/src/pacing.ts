@@ -73,8 +73,9 @@ export class AdaptiveOpticalPace {
       return this.currentCode
     }
     if (now - this.lastChangeAt < 5000) return this.currentCode
-    if (usefulShardBytes === 0 && storedBytes === 0 && processedFrames >= 4 && this.currentCode > 1) {
-      // Only a genuine data stall—not a low CRC percentage—triggers backoff.
+    if (usefulShardBytes === 0 && storedBytes === 0 && processedFrames >= 4 && this.currentCode > 1 && (validFrames < 3 || uniqueFrames < 2 || validFrames / processedFrames < 0.35)) {
+      // Do not treat clean, distinct CRC-valid frames at a low display rate
+      // as a stall merely because a FEC block has not completed yet.
       this.currentCode -= 1
       this.lastChangeAt = now
     } else if (now >= this.nextDownProbeAt && this.currentCode > 1 && observedSenderFps > 0 && usefulShards / spanSeconds < observedSenderFps * 0.2 && processedFrames - validFrames > validFrames && (this.currentCode - 1 !== this.rejectedCode || now >= this.retryRejectedAt)) {
@@ -84,8 +85,12 @@ export class AdaptiveOpticalPace {
       this.currentCode -= 1
       this.lastChangeAt = now
       this.nextDownProbeAt = now + 30000
-    } else if (usefulShardBytes > 0 && uniqueFrames >= 2 && this.currentCode < this.maxCode) {
-      const nextCode = this.currentCode + 1
+    } else if (validFrames >= 3 && uniqueFrames >= 2 && (usefulShardBytes > 0 || validFrames / processedFrames >= 0.5) && this.currentCode < this.maxCode) {
+      // At 1–2 FPS a repeated shard can make useful bytes appear stalled even
+      // though the camera is decoding clean frames. Probe a substantially
+      // faster rate, then retain it only if sender FPS and goodput confirm it.
+      const targetFps = opticalPaceFps(this.currentCode) * 1.8
+      const nextCode = Math.min(this.maxCode, Math.max(this.currentCode + 1, AUDIO_PACE_FPS.findIndex(fps => fps >= targetFps)))
       if (nextCode !== this.rejectedCode || now >= this.retryRejectedAt) {
         this.probe = { previousCode: this.currentCode, baselineBytesPerSecond: goodput, requestedAt: now, observedAt: null }
         this.currentCode = nextCode

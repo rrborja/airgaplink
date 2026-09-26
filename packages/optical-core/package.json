@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types src/roundtrip.test.ts && node --experimental-strip-types src/temporal-recovery.test.ts && node --experimental-strip-types src/fec.test.ts && node --experimental-strip-types src/control.test.ts && node --experimental-strip-types src/calibration.test.ts && node --experimental-strip-types src/transfer.test.ts && node --experimental-strip-types src/handshake.test.ts",
+    "test": "node --experimental-strip-types src/roundtrip.test.ts && node --experimental-strip-types src/temporal-recovery.test.ts && node --experimental-strip-types src/fec.test.ts && node --experimental-strip-types src/control.test.ts && node --experimental-strip-types src/calibration.test.ts && node --experimental-strip-types src/transfer.test.ts && node --experimental-strip-types src/handshake.test.ts && node --experimental-strip-types src/handshake-repair.test.ts && node --experimental-strip-types src/hex-fsk.test.ts && node --experimental-strip-types src/ofdm.test.ts",
     "benchmark": "node --experimental-strip-types src/benchmark.ts"
   },
   "dependencies": {

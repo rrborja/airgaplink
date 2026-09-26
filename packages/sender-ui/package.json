@@ -8,7 +8,7 @@
     "dev:vite": "vite",
     "build": "tsc && vite build",
     "serve": "node serve.mjs",
-    "test": "node --experimental-strip-types src/local-archive.test.ts && node --experimental-strip-types src/virtual-zip.test.ts && node --experimental-strip-types src/audio-block-scheduler.test.ts && node --experimental-strip-types src/audio-pace.test.ts && node --experimental-strip-types src/compact-ack.test.ts && node --experimental-strip-types src/shard-order.test.ts && node --experimental-strip-types src/optical-shard-size.test.ts",
+    "test": "node --experimental-strip-types src/local-archive.test.ts && node --experimental-strip-types src/virtual-zip.test.ts && node --experimental-strip-types src/audio-block-scheduler.test.ts && node --experimental-strip-types src/audio-pace.test.ts && node --experimental-strip-types src/compact-ack.test.ts && node --experimental-strip-types src/shard-order.test.ts && node --experimental-strip-types src/optical-shard-size.test.ts && node --experimental-strip-types src/optical-layout.test.ts",
     "preview": "vite preview",
     "lint": "eslint src --ext ts,tsx",
     "type-check": "tsc --noEmit"

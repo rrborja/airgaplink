@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
-import { DEBUG_PROFILE, RGB4_200_PROFILE, decodeOpticalCells, deterministicPayload, encodeOpticalFrame, framePayloadCapacity } from './index.ts'
+import { BINARY_PROFILE, DEBUG_PROFILE, RGB4_200_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, decodeOpticalCells, deterministicPayload, encodeOpticalFrame, framePayloadCapacity } from './index.ts'
 import { OpticalBlockCollector, ReedSolomonBlockCodec, SYMBOL_HEADER_BYTES, TRANSFER_MANIFEST_BYTES, packOpticalSymbol, packTransferManifest, unpackOpticalSymbol, unpackTransferManifest } from './fec.ts'
 
 const engine = ReedSolomonErasure.fromBytes(readFileSync(new URL(import.meta.resolve('@digitaldefiance/reed-solomon-erasure.wasm/wasm'))))
@@ -41,6 +41,28 @@ for (let blockId = 0; blockId < totalBlocks; blockId += 1) {
   result.set(bytes, cursor); cursor += bytes.length
 }
 if (cursor !== archive.length || !createHash('sha256').update(result).digest().equals(hash)) throw new Error('Final optical archive hash mismatch')
+// Both binary profiles fill their data grids with three spatial copies. Verify
+// their non-32-aligned FEC shard sizes through framing and erasure recovery.
+for (const binaryProfile of [BINARY_PROFILE, WIDE_BINARY_PROFILE]) {
+  const packetBytes = binaryRepeatedPayloadCapacity(binaryProfile), binaryShardBytes = packetBytes - SYMBOL_HEADER_BYTES
+  const binarySource = deterministicPayload(0x5511, 8 * binaryShardBytes - 1)
+  const binaryBlock = codec.encode(binarySource, binaryShardBytes)
+  const binaryCollector = new OpticalBlockCollector(new ReedSolomonBlockCodec(ReedSolomonErasure.fromBytes(wasmBytes)), transferId, 0)
+  let binaryRecovered: Uint8Array | null = null
+  for (let index = 0; index < binaryBlock.symbols.length; index += 1) {
+    if (index === 1 || index === 6) continue
+    const packet = packOpticalSymbol({ transferId, blockId: 0, index, sourceCount: 8, repairCount: 2, sourceBytes: binaryBlock.sourceBytes, bytes: binaryBlock.symbols[index] })
+    if (packet.length !== packetBytes) throw new Error('Binary packet did not fill triplicated grid')
+    const frame = encodeOpticalFrame(packet, 100 + index, 0, binaryProfile)
+    frame.cells[16 * frame.width + 16] ^= 1
+    const decoded = decodeOpticalCells(frame.cells, binaryProfile)
+    if (!decoded.ok || decoded.recovery !== 'spatial-copy') throw new Error('Full-grid binary frame did not recover damaged first copy')
+    const symbol = unpackOpticalSymbol(decoded.payload)
+    if (!symbol) throw new Error('Full-grid binary symbol failed')
+    binaryRecovered = binaryCollector.add(symbol) || binaryRecovered
+  }
+  if (!binaryRecovered || binaryRecovered.some((value, index) => value !== binarySource[index])) throw new Error('Full-grid binary FEC block failed')
+}
 // RGB's lower effective payload capacity must still fit the unchanged optical
 // symbol/FEC path. Corrupt one spatial copy in every received RGB frame.
 const rgbArchive = deterministicPayload(0x8877, 22000), rgbHash = createHash('sha256').update(rgbArchive).digest()

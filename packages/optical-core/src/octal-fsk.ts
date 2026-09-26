@@ -53,7 +53,7 @@ function encodeBody(body: Uint8Array, sampleRate: number, symbolSeconds: number)
 export function encodeOctalFskPacket(packet: ControlPacket, sampleRate = 48000, symbolSeconds = FSK_SYMBOL_SECONDS) { return encodeBody(packControlPacket(packet), sampleRate, symbolSeconds) }
 export function encodeOctalCompactFskPacket(packet: ControlPacket, sampleRate = 48000, symbolSeconds = FSK_SYMBOL_SECONDS) { return encodeBody(packCompactControlPacket(packet), sampleRate, symbolSeconds) }
 export function encodeOctalFskHandshakePacket(packet: ControlPacket, sampleRate = 48000, symbolSeconds = FSK_SYMBOL_SECONDS) {
-  if (packet.type !== ControlType.HANDSHAKE_FRAGMENT) throw new Error('Eight-tone handshake encoder requires a fragment')
+  if (packet.type !== ControlType.HANDSHAKE_FRAGMENT && packet.type !== ControlType.HANDSHAKE_DENSE_FRAGMENT) throw new Error('Eight-tone handshake encoder requires a fragment')
   return encodeOctalFskPacket(packet, sampleRate, symbolSeconds)
 }
 

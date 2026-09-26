@@ -1,4 +1,4 @@
-import { BINARY_PROFILE, DEBUG_PROFILE, GRAY4_PROFILE, RGB4_200_PROFILE, RGB4_PROFILE, RGB_BOOTSTRAP_FRAME_TAG, TARGET_PROFILE, calibrationFrameId, decodeOpticalCells, decodeOpticalImage, deterministicPayload, encodeOpticalFrame, framePayloadCapacity, isDeterministicPayload, opticalProfileNumber, rasterizeOpticalCells, sampleOpticalCells } from './index.ts'
+import { BINARY_200_REPEATED_MAX_BYTES, BINARY_PROFILE, DEBUG_PROFILE, GRAY4_PROFILE, RGB4_200_PROFILE, RGB4_PROFILE, RGB_BOOTSTRAP_FRAME_TAG, TARGET_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, calibrationFrameId, decodeOpticalCells, decodeOpticalImage, deterministicPayload, encodeOpticalFrame, framePayloadCapacity, isDeterministicPayload, opticalProfileNumber, rasterizeOpticalCells, sampleOpticalCells } from './index.ts'
 
 const payload = deterministicPayload(42, framePayloadCapacity(DEBUG_PROFILE))
 const encoded = encodeOpticalFrame(payload, 42, 7)
@@ -65,6 +65,28 @@ const oneBadCopy = repeatedBinaryFrame.cells.slice()
 oneBadCopy[16 * repeatedBinaryFrame.width + 16] ^= 1
 const recoveredBinary = decodeOpticalCells(oneBadCopy, BINARY_PROFILE)
 if (!recoveredBinary.ok || recoveredBinary.recovery !== 'spatial-copy') throw new Error('200×120 binary copy recovery failed')
+const fullRepeatedPayload = deterministicPayload(110, BINARY_200_REPEATED_MAX_BYTES)
+const fullRepeatedFrame = encodeOpticalFrame(fullRepeatedPayload, 110, 11, BINARY_PROFILE)
+const fullRepeatedCells = fullRepeatedFrame.cells.slice()
+for (let copy = 0; copy < 3; copy += 1) {
+  const position = copy * fullRepeatedPayload.length * 8 + copy
+  fullRepeatedCells[(16 + Math.floor(position / BINARY_PROFILE.gridWidth)) * fullRepeatedFrame.width + 16 + position % BINARY_PROFILE.gridWidth] ^= 1
+}
+const fullRepeatedDecoded = decodeOpticalCells(fullRepeatedCells, BINARY_PROFILE)
+if (!fullRepeatedDecoded.ok || fullRepeatedDecoded.recovery !== 'majority' || fullRepeatedDecoded.payload.some((value, index) => value !== fullRepeatedPayload[index])) throw new Error('Full-grid binary spatial majority failed')
+if (fullRepeatedPayload.length * 8 * 3 !== BINARY_PROFILE.gridWidth * BINARY_PROFILE.gridHeight) throw new Error('Triplicated binary payload leaves filler bands')
+const widePayload = deterministicPayload(111, binaryRepeatedPayloadCapacity(WIDE_BINARY_PROFILE))
+const wideFrame = encodeOpticalFrame(widePayload, 111, 11, WIDE_BINARY_PROFILE)
+const wideImage = decodeOpticalImage(rasterizeOpticalCells(wideFrame, 5), WIDE_BINARY_PROFILE)
+if (!wideImage.ok || wideImage.payload.some((value, index) => value !== widePayload[index])) throw new Error('Wide binary camera round trip failed')
+const wideCells = wideFrame.cells.slice()
+for (let copy = 0; copy < 3; copy += 1) {
+  const position = copy * widePayload.length * 8 + copy
+  wideCells[(16 + Math.floor(position / WIDE_BINARY_PROFILE.gridWidth)) * wideFrame.width + 16 + position % WIDE_BINARY_PROFILE.gridWidth] ^= 1
+}
+const wideRecovered = decodeOpticalCells(wideCells, WIDE_BINARY_PROFILE)
+if (!wideRecovered.ok || wideRecovered.recovery !== 'majority' || wideRecovered.payload.some((value, index) => value !== widePayload[index])) throw new Error('Wide binary majority recovery failed')
+if (widePayload.length * 8 * 3 !== WIDE_BINARY_PROFILE.gridWidth * WIDE_BINARY_PROFILE.gridHeight) throw new Error('Wide triplicated payload leaves filler bands')
 const grayscaleSource = rasterizeOpticalCells(binaryFrame, 5)
 const grayscale = new Uint8Array(grayscaleSource.width * grayscaleSource.height)
 for (let index = 0; index < grayscale.length; index += 1) grayscale[index] = grayscaleSource.data![index * 4]
@@ -109,7 +131,7 @@ for (const profile of [GRAY4_PROFILE, TARGET_PROFILE]) {
   const locallyShaded = decodeOpticalImage(shaded, profile, boundary)
   if (!locallyShaded.ok || !isDeterministicPayload(locallyShaded.payload, 59)) throw new Error(`${profile.id} locally shaded four-level image failed: ${locallyShaded.ok ? 'wrong data' : locallyShaded.reason}`)
 }
-if (opticalProfileNumber(RGB4_PROFILE) !== 5 || opticalProfileNumber(RGB4_200_PROFILE) !== 6 || opticalProfileNumber(GRAY4_PROFILE) !== 3) throw new Error('RGB profile changed existing wire profile numbers')
+if (opticalProfileNumber(RGB4_PROFILE) !== 5 || opticalProfileNumber(RGB4_200_PROFILE) !== 6 || opticalProfileNumber(GRAY4_PROFILE) !== 3 || opticalProfileNumber(WIDE_BINARY_PROFILE) !== 7) throw new Error('Existing wire profile numbers changed')
 for (const profile of [RGB4_PROFILE, RGB4_200_PROFILE]) for (const size of [79, framePayloadCapacity(profile)]) {
   const rgbPayload = deterministicPayload(73, size)
   const rgbFrame = encodeOpticalFrame(rgbPayload, 73, 6, profile)

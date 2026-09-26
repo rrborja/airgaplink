@@ -19,7 +19,21 @@ export const HANDSHAKE_CAPABILITY_COMPACT_READY = 32
 export const HANDSHAKE_CAPABILITY_FAST_READY = 64
 /** Negotiated 12 ms symbols for eight-tone response, READY, and runtime control. */
 export const HANDSHAKE_CAPABILITY_FAST_OCTAL = 128
-export type AcousticToneCount = 2 | 4 | 8
+/** Nine response bytes per CRC-protected acoustic packet instead of six. */
+export const HANDSHAKE_CAPABILITY_DENSE_RESPONSE = 256
+/** Two Reed–Solomon response repair fragments; only valid with dense response. */
+export const HANDSHAKE_CAPABILITY_RESPONSE_PARITY = 512
+/** Probe-led, transcript-bound acoustic mode selection. */
+export const HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO = 1024
+export const HANDSHAKE_CAPABILITY_HEX_FSK = 2048
+/** Experimental differential-BPSK OFDM acoustic packets. */
+export const HANDSHAKE_CAPABILITY_OFDM = 4096
+export const HANDSHAKE_NACK_MAGIC = Uint8Array.of(0x41, 0x48, 0x4e, 1) // AHN1
+export const HANDSHAKE_NACK_LEGACY = 1
+export const HANDSHAKE_NACK_DENSE = 2
+export interface HandshakeNack { sessionId: Uint8Array; format: number; count: number; requestId: number; missingMask: number }
+/** 32 is the OFDM mode code, not a count of FSK tones. */
+export type AcousticToneCount = 2 | 4 | 8 | 16 | 32
 
 export interface HandshakeOffer { protocolVersion: number; sessionId: Uint8Array; senderEphemeralPublicKey: Uint8Array; senderNonce: Uint8Array; capabilities: number }
 export interface HandshakeResponse { protocolVersion: number; sessionId: Uint8Array; receiverEphemeralPublicKey: Uint8Array; receiverNonce: Uint8Array; profileId: number; capabilities: number; receiverIdentity?: Uint8Array; identitySignature?: Uint8Array; transcriptBinding: Uint8Array }
@@ -39,6 +53,9 @@ export function sessionSalt(offer: HandshakeOffer, receiverNonce: Uint8Array) { 
 export function deriveHandshakeMaterial(offer: HandshakeOffer, response: HandshakeResponse, privateKey: Uint8Array, role: 'sender' | 'receiver' = 'sender'): HandshakeMaterial {
   if (!equalBytes(offer.sessionId, response.sessionId) || response.protocolVersion !== offer.protocolVersion) throw new Error('Handshake session mismatch')
   if (response.capabilities & ~offer.capabilities) throw new Error('Unadvertised handshake capability')
+  if (response.capabilities & HANDSHAKE_CAPABILITY_RESPONSE_PARITY && !(response.capabilities & HANDSHAKE_CAPABILITY_DENSE_RESPONSE)) throw new Error('Parity requires dense response')
+  if (response.capabilities & HANDSHAKE_CAPABILITY_HEX_FSK && !(response.capabilities & HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO)) throw new Error('16-FSK requires adaptive mode selection')
+  if (response.capabilities & HANDSHAKE_CAPABILITY_OFDM && !(response.capabilities & HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO)) throw new Error('OFDM requires adaptive mode selection')
   const transcript = canonicalTranscript(offer, response), transcriptHash = sha256Bytes(transcript)
   const keys = deriveSessionKeys(x25519SharedSecret(privateKey, role === 'sender' ? response.receiverEphemeralPublicKey : offer.senderEphemeralPublicKey), sessionSalt(offer, response.receiverNonce))
   const expected = transcriptBinding(keys.sessionBindingKey, transcriptHash)
@@ -62,7 +79,7 @@ export function keyConfirm(key: Uint8Array, transcriptHash: Uint8Array) { return
 /** V2 optical confirmation authenticates the physical mode selected after
  * hearing the response, so the receiver uses the same mode for READY/ACKs. */
 export function keyConfirmAudioMode(key: Uint8Array, transcriptHash: Uint8Array, toneCount: AcousticToneCount) {
-  if (toneCount !== 2 && toneCount !== 4 && toneCount !== 8) throw new Error('Invalid acoustic mode')
+  if (toneCount !== 2 && toneCount !== 4 && toneCount !== 8 && toneCount !== 16 && toneCount !== 32) throw new Error('Invalid acoustic mode')
   return hmacSha256(key, transcriptHash, utf8ToBytes('sender-confirm/audio-v2'), Uint8Array.of(toneCount))
 }
 export function readyConfirm(key: Uint8Array, transcriptHash: Uint8Array) { return hmacSha256(key, transcriptHash, utf8ToBytes('receiver-ready')) }
@@ -77,13 +94,30 @@ export function decodeHandshakeOffer(bytes: Uint8Array): HandshakeOffer | null {
 export function encodeKeyConfirm(sessionId: Uint8Array, confirmation: Uint8Array) { check(sessionId, 16, 'session ID'); check(confirmation, 32, 'confirmation'); return concatBytes(KEY_CONFIRM_MAGIC, sessionId, confirmation) }
 export function encodeKeyConfirmAudioMode(sessionId: Uint8Array, toneCount: AcousticToneCount, confirmation: Uint8Array) {
   check(sessionId, 16, 'session ID'); check(confirmation, 32, 'confirmation')
-  if (toneCount !== 2 && toneCount !== 4 && toneCount !== 8) throw new Error('Invalid acoustic mode')
+  if (toneCount !== 2 && toneCount !== 4 && toneCount !== 8 && toneCount !== 16 && toneCount !== 32) throw new Error('Invalid acoustic mode')
   return concatBytes(KEY_CONFIRM_AUDIO_MAGIC, sessionId, Uint8Array.of(toneCount), confirmation)
 }
 export function decodeKeyConfirm(bytes: Uint8Array): { sessionId: Uint8Array; confirmation: Uint8Array; toneCount?: AcousticToneCount } | null {
   if (bytes.length === 52 && equalBytes(bytes.slice(0, 4), KEY_CONFIRM_MAGIC)) return { sessionId: bytes.slice(4, 20), confirmation: bytes.slice(20) }
-  if (bytes.length === 53 && equalBytes(bytes.slice(0, 4), KEY_CONFIRM_AUDIO_MAGIC) && (bytes[20] === 2 || bytes[20] === 4 || bytes[20] === 8)) return { sessionId: bytes.slice(4, 20), toneCount: bytes[20] as AcousticToneCount, confirmation: bytes.slice(21) }
+  if (bytes.length === 53 && equalBytes(bytes.slice(0, 4), KEY_CONFIRM_AUDIO_MAGIC) && (bytes[20] === 2 || bytes[20] === 4 || bytes[20] === 8 || bytes[20] === 16 || bytes[20] === 32)) return { sessionId: bytes.slice(4, 20), toneCount: bytes[20] as AcousticToneCount, confirmation: bytes.slice(21) }
   return null
+}
+/** Pre-auth optical request for response-fragment retransmission only. A NACK
+ * carries no negotiated fields, key material, or state-transition authority. */
+export function encodeHandshakeNack(sessionId: Uint8Array, format: number, count: number, requestId: number, missingMask: number) {
+  check(sessionId, SESSION_ID_BYTES, 'session ID')
+  if ((format !== HANDSHAKE_NACK_LEGACY && format !== HANDSHAKE_NACK_DENSE) || !Number.isInteger(count) || count < 1 || count > 31 || !Number.isInteger(requestId) || requestId < 0 || requestId > 65535 || !Number.isInteger(missingMask) || missingMask <= 0 || (missingMask >>> count) !== 0) throw new Error('Invalid handshake NACK')
+  const bytes = new Uint8Array(28), view = new DataView(bytes.buffer)
+  bytes.set(HANDSHAKE_NACK_MAGIC); bytes.set(sessionId, 4); bytes[20] = format; bytes[21] = count
+  view.setUint16(22, requestId); view.setUint32(24, missingMask)
+  return bytes
+}
+export function decodeHandshakeNack(bytes: Uint8Array): HandshakeNack | null {
+  if (bytes.length !== 28 || !equalBytes(bytes.subarray(0, 4), HANDSHAKE_NACK_MAGIC)) return null
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const format = bytes[20], count = bytes[21], requestId = view.getUint16(22), missingMask = view.getUint32(24)
+  if ((format !== HANDSHAKE_NACK_LEGACY && format !== HANDSHAKE_NACK_DENSE) || count < 1 || count > 31 || !missingMask || (missingMask >>> count) !== 0) return null
+  return { sessionId: bytes.slice(4, 20), format, count, requestId, missingMask }
 }
 export function encodeReadyConfirm(sessionId: Uint8Array, confirmation: Uint8Array) { check(sessionId, 16, 'session ID'); check(confirmation, 32, 'confirmation'); return concatBytes(HANDSHAKE_READY_MAGIC, sessionId, confirmation) }
 export function encodeReadyConfirmCompact(sessionId: Uint8Array, confirmation: Uint8Array) {

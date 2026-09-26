@@ -1,4 +1,5 @@
 import { writeOpticalCellRgba, type EncodedOpticalFrame, type OpticalProfile } from '@qrcopy/optical-core'
+import { fitOpticalFrame } from './optical-layout'
 
 /** Change symbols at animation boundaries, while preserving a minimum hold. */
 export function scheduleOpticalFrames(profile: OpticalProfile, draw: () => void, logicalFps = () => profile.targetDisplayFps / profile.frameHoldCount) {
@@ -52,9 +53,13 @@ export class OpticalRenderer {
   }
 
   render(frame: EncodedOpticalFrame) {
-    const frameRatio = frame.width / frame.height
-    const availableWidth = Math.max(640, window.innerWidth * 0.94), availableHeight = Math.max(420, window.innerHeight * 0.72)
-    const targetWidth = Math.floor(Math.min(availableWidth, availableHeight * frameRatio)), targetHeight = Math.floor(targetWidth / frameRatio)
+    const stage = this.canvas.parentElement
+    const fullscreen = !!stage && document.fullscreenElement === stage
+    const statusHeight = fullscreen ? stage.querySelector<HTMLElement>('.optical-stage-status')?.offsetHeight || 0 : 0
+    const verificationHeight = fullscreen ? stage.querySelector<HTMLElement>('.optical-stage-verification')?.offsetHeight || 0 : 0
+    const availableWidth = fullscreen ? stage.clientWidth - 24 : window.innerWidth * 0.94
+    const availableHeight = fullscreen ? stage.clientHeight - 32 - statusHeight - verificationHeight : window.innerHeight * 0.72
+    const { width: targetWidth, height: targetHeight } = fitOpticalFrame(frame.width, frame.height, Math.max(1, availableWidth), Math.max(1, availableHeight))
     if (this.canvas.width !== targetWidth || this.canvas.height !== targetHeight) { this.canvas.width = targetWidth; this.canvas.height = targetHeight }
     if (this.gl && this.program && this.texture) {
       const gl = this.gl

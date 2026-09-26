@@ -11,22 +11,24 @@ export { OpticalBlockCollector, ReedSolomonBlockCodec, packOpticalSymbol, unpack
 export type { EncodedBlock, OpticalSymbol, AvailableSymbol, ErasureEngine, TransferManifest } from './fec.ts'
 export { ControlType, CONTROL_MAX_PAYLOAD, FSK_SYMBOL_SECONDS, FSK_ZERO_HZ, FSK_ONE_HZ, QUAD_FSK_TONES_HZ, QUAD_FSK_SYNC_HZ, packControlPacket, unpackControlPacket, packCompactControlPacket, unpackCompactControlPacket, makeBlockStatusPayload, readBlockStatusPayload, makeCompactStatusPayload, readCompactStatusPayload, encodeFskPacket, encodeCompactFskPacket, encodeQuadFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, decodeFskSamples, decodeQuadFskSamples, decodeQuadFskHandshakeSamples } from './control.ts'
 export { OCTAL_FSK_TONES_HZ, OCTAL_FSK_SYNC_HZ, OCTAL_FAST_SYMBOL_SECONDS, encodeOctalFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, decodeOctalFskSamples } from './octal-fsk.ts'
-export { responseToneCount, runtimeToneAllowed, runtimeToneCount, compactReadyNegotiated, fastReadyNegotiated, octalSymbolSeconds } from './audio-mode.ts'
+export { HEX_FSK_TONES_HZ, HEX_FSK_SYNC_HZ, encodeHexFskPacket, encodeHexCompactFskPacket, encodeHexFskHandshakePacket, decodeHexFskSamples, decodeHexFskSamplesWithMetrics, type HexFskDecode } from './hex-fsk.ts'
+export { OFDM_CARRIERS, OFDM_USEFUL_SECONDS, OFDM_PREFIX_SECONDS, encodeOfdmPacket, encodeOfdmCompactPacket, encodeOfdmHandshakePacket, decodeOfdmSamples, decodeOfdmSamplesWithMetrics, type OfdmDecode } from './ofdm.ts'
+export { AUDIO_MODE_SELECT_MAGIC, chooseAdaptiveAudioMode, nextSaferAcousticMode, acousticFallbackDecision, selectedAcousticModeMatches, encodeAudioModeSelect, decodeAudioModeSelect, responseToneCount, runtimeToneAllowed, runtimeToneCount, compactReadyNegotiated, fastReadyNegotiated, octalSymbolSeconds, type AudioProbeQuality } from './audio-mode.ts'
 export { OPTICAL_QUALITY_VERSION, OPTICAL_QUALITY_CRC_FAILURE, OPTICAL_OFFER_HOLD_MS, makeOpticalQualityPayload, readOpticalQualityPayload, nextOpticalOfferHold } from './optical-feedback.ts'
 export type { ControlPacket } from './control.ts'
 export { CRYPTO_PROTOCOL_VERSION, SESSION_ID_BYTES, NONCE_BYTES, X25519_KEY_BYTES, generateEphemeralKeyPair, x25519SharedSecret, deriveSessionKeys, generateIdentityKeyPair, signIdentity, verifyIdentity, opticalNonce, opticalBlockAad, aesGcmEncrypt, aesGcmDecrypt, OpticalBlockEncryptor, zeroBytes } from './crypto.ts'
 export type { EphemeralKeyPair, SessionKeys } from './crypto.ts'
-export { HANDSHAKE_CAPABILITY_IDENTITY, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_FAST_READY, HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_OFFER_MAGIC, KEY_CONFIRM_MAGIC, KEY_CONFIRM_AUDIO_MAGIC, HANDSHAKE_RESPONSE_MAGIC, HANDSHAKE_READY_MAGIC, HANDSHAKE_READY_COMPACT_MAGIC, canonicalTranscript, sessionSalt, deriveHandshakeMaterial, makeOffer, makeResponse, transcriptBinding, sasCode, keyConfirm, keyConfirmAudioMode, readyConfirm, readyConfirmCompact, readyConfirmFast, verifyReadyConfirm, equalBytes, encodeHandshakeOffer, decodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, decodeKeyConfirm, decodeReadyConfirm, encodeReadyConfirm, encodeReadyConfirmCompact, encodeHandshakeResponse, decodeHandshakeResponse, type AcousticToneCount } from './handshake.ts'
+export { HANDSHAKE_CAPABILITY_IDENTITY, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_FAST_READY, HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_DENSE_RESPONSE, HANDSHAKE_CAPABILITY_RESPONSE_PARITY, HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO, HANDSHAKE_CAPABILITY_HEX_FSK, HANDSHAKE_CAPABILITY_OFDM, HANDSHAKE_NACK_MAGIC, HANDSHAKE_NACK_LEGACY, HANDSHAKE_NACK_DENSE, HANDSHAKE_OFFER_MAGIC, KEY_CONFIRM_MAGIC, KEY_CONFIRM_AUDIO_MAGIC, HANDSHAKE_RESPONSE_MAGIC, HANDSHAKE_READY_MAGIC, HANDSHAKE_READY_COMPACT_MAGIC, canonicalTranscript, sessionSalt, deriveHandshakeMaterial, makeOffer, makeResponse, transcriptBinding, sasCode, keyConfirm, keyConfirmAudioMode, readyConfirm, readyConfirmCompact, readyConfirmFast, verifyReadyConfirm, equalBytes, encodeHandshakeOffer, decodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, decodeKeyConfirm, encodeHandshakeNack, decodeHandshakeNack, decodeReadyConfirm, encodeReadyConfirm, encodeReadyConfirmCompact, encodeHandshakeResponse, decodeHandshakeResponse, type AcousticToneCount } from './handshake.ts'
 export { fastReadyPackets, FastReadyAssembler } from './ready-control.ts'
 export type { HandshakeOffer, HandshakeResponse, HandshakeMaterial } from './handshake.ts'
-export { HANDSHAKE_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_FRAGMENTS, MAX_HANDSHAKE_MESSAGE_BYTES, fragmentHandshakeMessage, rotateHandshakePackets, parseHandshakeFragment, AcousticFragmentReassembler } from './acoustic-fragment.ts'
+export { HANDSHAKE_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_FRAGMENTS, MAX_HANDSHAKE_MESSAGE_BYTES, DENSE_HANDSHAKE_DATA_BYTES, DENSE_HANDSHAKE_PARITY_FRAGMENTS, MAX_DENSE_HANDSHAKE_FRAGMENTS, fragmentHandshakeMessage, fragmentDenseHandshakeResponse, rotateHandshakePackets, selectHandshakeResponseFragments, selectHandshakeNackRetransmissions, isFreshHandshakeNackRequest, parseHandshakeFragment, parseDenseHandshakeFragment, denseHandshakeSessionTag, AcousticFragmentReassembler, DenseHandshakeReassembler } from './acoustic-fragment.ts'
 export { AUDIO_PACE_FPS, AdaptiveOpticalPace, opticalPaceFps, recommendOpticalPaceCode, type OpticalPaceWindow } from './pacing.ts'
 export { TemporalOpticalRecovery } from './temporal-recovery.ts'
 export { CALIBRATION_STAGE_MS, CALIBRATION_END_STAGE, calibrationRates, calibrationFrameId, readCalibrationFrameId, selectCalibratedPaceCode } from './calibration.ts'
 export type { CalibrationSample } from './calibration.ts'
 
 export interface OpticalProfile {
-  id: 'debug-100x60' | 'binary-200x120' | 'gray4-300x180' | 'gray4-400x240' | 'rgb4-300x180' | 'rgb4-200x120';
+  id: 'debug-100x60' | 'binary-200x120' | 'binary-240x120' | 'gray4-300x180' | 'gray4-400x240' | 'rgb4-300x180' | 'rgb4-200x120';
   gridWidth: number;
   gridHeight: number;
   bitsPerSymbol: 1 | 2;
@@ -59,13 +61,25 @@ export const BINARY_PROFILE: OpticalProfile = {
   fecRatio: 0,
 }
 
+/** Same vertical cell size as 200×120, with more columns for wide displays. */
+export const WIDE_BINARY_PROFILE: OpticalProfile = {
+  id: 'binary-240x120',
+  gridWidth: 240,
+  gridHeight: 120,
+  bitsPerSymbol: 1,
+  frameHoldCount: 2,
+  targetDisplayFps: 60,
+  expectedCameraFps: 60,
+  fecRatio: 0,
+}
+
 export const GRAY4_PROFILE: OpticalProfile = { id: 'gray4-300x180', gridWidth: 300, gridHeight: 180, bitsPerSymbol: 2, frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 export const TARGET_PROFILE: OpticalProfile = { id: 'gray4-400x240', gridWidth: 400, gridHeight: 240, bitsPerSymbol: 2, frameHoldCount: 1, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 export const RGB4_PROFILE: OpticalProfile = { id: 'rgb4-300x180', gridWidth: 300, gridHeight: 180, bitsPerSymbol: 2, colorMode: 'rgb', frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 export const RGB4_200_PROFILE: OpticalProfile = { id: 'rgb4-200x120', gridWidth: 200, gridHeight: 120, bitsPerSymbol: 2, colorMode: 'rgb', frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 
 // Append only: profile numbers are present in optical headers and acoustic negotiation.
-export const OPTICAL_PROFILES = [DEBUG_PROFILE, BINARY_PROFILE, GRAY4_PROFILE, TARGET_PROFILE, RGB4_PROFILE, RGB4_200_PROFILE] as const
+export const OPTICAL_PROFILES = [DEBUG_PROFILE, BINARY_PROFILE, GRAY4_PROFILE, TARGET_PROFILE, RGB4_PROFILE, RGB4_200_PROFILE, WIDE_BINARY_PROFILE] as const
 export function opticalProfileNumber(profile: OpticalProfile) { return OPTICAL_PROFILES.findIndex(item => item.id === profile.id) + 1 }
 
 export const PROTOCOL_VERSION = 1
@@ -80,8 +94,12 @@ const DATA_INSET = 16
 export const RGB_BOOTSTRAP_FRAME_TAG = 0xfe000000
 const RGB_BOOTSTRAP_COPIES = 5
 const RGB_DATA_COPIES = 3
-const BINARY_200_REPEATED_MAX_BYTES = 800
-const BINARY_200_COPIES = 3
+const BINARY_COPIES = 3
+export const BINARY_200_REPEATED_MAX_BYTES = BINARY_PROFILE.gridWidth * BINARY_PROFILE.gridHeight / (8 * BINARY_COPIES)
+export function binaryRepeatedPayloadCapacity(profile: OpticalProfile) {
+  return profile.id === BINARY_PROFILE.id || profile.id === WIDE_BINARY_PROFILE.id
+    ? Math.floor(profile.gridWidth * profile.gridHeight / (8 * BINARY_COPIES)) : 0
+}
 // A single display cell was not reliably separable through the physical
 // screen/camera pair. Keep the four pure colors, but give each data symbol a
 // 2x2 physical footprint so the camera can sample well inside its edges.
@@ -270,7 +288,8 @@ export function encodeOpticalFrame(payload: Uint8Array, frameId: number, blockId
   if (payload.length > framePayloadCapacity(profile)) throw new Error(`Payload exceeds ${framePayloadCapacity(profile)} byte frame capacity`)
   const bootstrap = rgbBootstrapFrame(profile, frameId)
   const rgbCopies = profile.colorMode === 'rgb' ? bootstrap ? RGB_BOOTSTRAP_COPIES : RGB_DATA_COPIES : 1
-  const binaryCopies = profile.id === BINARY_PROFILE.id && payload.length <= BINARY_200_REPEATED_MAX_BYTES ? BINARY_200_COPIES : 1
+  const repeatedCapacity = binaryRepeatedPayloadCapacity(profile)
+  const binaryCopies = repeatedCapacity > 0 && payload.length <= repeatedCapacity ? BINARY_COPIES : 1
   if (profile.colorMode === 'rgb' && payload.length * 4 * rgbCopies > rgbSymbolCapacity(profile)) throw new Error('RGB payload exceeds spatial repetition capacity')
   if (binaryCopies > 1 && payload.length * 8 * binaryCopies > profile.gridWidth * profile.gridHeight) throw new Error('Binary payload exceeds spatial repetition capacity')
   const { width, height } = frameDimensions(profile)
@@ -398,7 +417,8 @@ export function decodeOpticalCells(cells: Uint8Array, profile = DEBUG_PROFILE): 
   if (header.payloadLength > framePayloadCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
   const bootstrap = rgbBootstrapFrame(profile, header.frameId)
   const rgbCopies = profile.colorMode === 'rgb' ? bootstrap ? RGB_BOOTSTRAP_COPIES : RGB_DATA_COPIES : 1
-  const binaryCopies = profile.id === BINARY_PROFILE.id && header.payloadLength <= BINARY_200_REPEATED_MAX_BYTES ? BINARY_200_COPIES : 1
+  const repeatedCapacity = binaryRepeatedPayloadCapacity(profile)
+  const binaryCopies = repeatedCapacity > 0 && header.payloadLength <= repeatedCapacity ? BINARY_COPIES : 1
   if (profile.colorMode === 'rgb' && header.payloadLength * 4 * rgbCopies > rgbSymbolCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
   if (binaryCopies > 1 && header.payloadLength * 8 * binaryCopies > profile.gridWidth * profile.gridHeight) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
   const readPayload = (startSymbol: number) => {

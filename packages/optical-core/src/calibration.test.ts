@@ -29,9 +29,11 @@ const window = (usefulShardBytes: number, observedSenderFps: number, processedFr
 if (adaptive.update(window(0, 1, 12, 12, 1), 4000) !== 1) throw new Error('Repeated one frame caused a false speed-up')
 if (adaptive.update(window(4000, 1), 4000) !== 2 || adaptive.update(window(4000, 1), 8000) !== 2) throw new Error('Productive 1 FPS link did not probe upward or advanced before the sender')
 if (adaptive.update(window(8000, 2), 9000) !== 2 || adaptive.update(window(8000, 2), 14000) !== 2) throw new Error('Higher-goodput probe was not accepted')
-if (adaptive.update(window(8000, 2), 19000) !== 3 || adaptive.update(window(2000, 3), 24000) !== 3 || adaptive.update(window(2000, 3), 29000) !== 2) throw new Error('Lower-goodput probe did not revert')
+if (adaptive.update(window(8000, 2), 19000) !== 4 || adaptive.update(window(2000, 4), 24000) !== 4 || adaptive.update(window(2000, 4), 29000) !== 2) throw new Error('Lower-goodput probe did not revert')
 if (adaptive.update(window(8000, 2), 34000) !== 2) throw new Error('Rejected faster rate was immediately retried')
 if (adaptive.update({ ...window(8000, 2), validFrames: 13 }, 40000) !== 2) throw new Error('Malformed pace statistics changed the recommendation')
+const cleanLowFps = new AdaptiveOpticalPace(DEBUG_PROFILE, 2)
+if (cleanLowFps.update(window(0, 2, 10, 9, 8), 5000) !== 4 || cleanLowFps.update(window(0, 4, 18, 16, 12), 10000) !== 4 || cleanLowFps.update(window(0, 4, 18, 16, 12), 15000) !== 4) throw new Error('Clean 2-FPS optical stream did not probe 4 FPS without waiting for a completed shard')
 const fastWithErrors = new AdaptiveOpticalPace(DEBUG_PROFILE, 13) // 30 FPS
 if (fastWithErrors.update(window(16000, 30, 40, 16, 16), 10000) !== 13) throw new Error('High invalid percentage incorrectly lowered a faster productive link')
 if (fastWithErrors.update(window(0, 30, 40, 0, 0), 20000) !== 12) throw new Error('Genuine zero-progress stall did not back off')

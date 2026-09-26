@@ -4,6 +4,8 @@ import reedSolomonWasmUrl from '@digitaldefiance/reed-solomon-erasure.wasm/wasm?
 import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockEncryptor, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, calibrationFrameId, calibrationRates, decodeFskSamples, decodeOctalFskSamples, decodeQuadFskSamples, decodeHandshakeResponse, decodeReadyConfirm, deriveHandshakeMaterial, encodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, encodeOpticalFrame, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeOffer, opticalProfileNumber, packOpticalSymbol, packTransferManifest, parseHandshakeFragment, readBlockStatusPayload, readCompactStatusPayload, runtimeToneCount, verifyReadyConfirm, type AcousticToneCount, type HandshakeMaterial, type HandshakeOffer, type OpticalProfile } from '@qrcopy/optical-core'
 import { OPTICAL_OFFER_HOLD_MS, RGB_BOOTSTRAP_FRAME_TAG, nextOpticalOfferHold } from '@qrcopy/optical-core'
 import { FastReadyAssembler, FSK_SYMBOL_SECONDS, HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_FAST_READY, OCTAL_FAST_SYMBOL_SECONDS, equalBytes, fastReadyNegotiated, octalSymbolSeconds, readyConfirmFast } from '@qrcopy/optical-core'
+import { DenseHandshakeReassembler, HANDSHAKE_CAPABILITY_DENSE_RESPONSE, HANDSHAKE_CAPABILITY_RESPONSE_PARITY, HANDSHAKE_NACK_DENSE, HANDSHAKE_NACK_LEGACY, denseHandshakeSessionTag, encodeHandshakeNack, parseDenseHandshakeFragment } from '@qrcopy/optical-core'
+import { HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO, HANDSHAKE_CAPABILITY_HEX_FSK, HANDSHAKE_CAPABILITY_OFDM, acousticFallbackDecision, chooseAdaptiveAudioMode, decodeHexFskSamplesWithMetrics, decodeOfdmSamplesWithMetrics, encodeAudioModeSelect, selectedAcousticModeMatches, type ControlPacket } from '@qrcopy/optical-core'
 import { OpticalRenderer, scheduleOpticalFrames } from './OpticalRenderer'
 import { createLocalOpticalArchive, readTransferBlock } from './local-archive'
 import { createVirtualZipArchive, type ArchiveSource } from './virtual-zip'
@@ -24,7 +26,7 @@ export function OpticalFileSender() {
   const directoryInput = useRef<HTMLInputElement>(null), canvasRef = useRef<HTMLCanvasElement>(null), opticalStageRef = useRef<HTMLDivElement>(null), renderer = useRef<OpticalRenderer | null>(null), codec = useRef<ReedSolomonBlockCodec | null>(null)
   const acked = useRef(new Set<number>()), microphone = useRef<MediaStream | null>(null), audioContext = useRef<AudioContext | null>(null), audioTimer = useRef<number | null>(null), audioChunks = useRef<Float32Array[]>([]), seenPackets = useRef(new Set<string>())
   const transferRef = useRef<FileTransfer | null>(null), pairedIdRef = useRef<number | null>(null), completedRef = useRef(false), preparingRef = useRef(false), receiverStorageRef = useRef<'unknown' | 'disk' | 'memory'>('unknown')
-  const handshakeRef = useRef<{ state: SenderHandshakeState; privateKey?: Uint8Array; offer?: HandshakeOffer; responseCapabilities?: number; audioMode?: AcousticToneCount; octalSeconds?: number; material?: HandshakeMaterial; reassembler: AcousticFragmentReassembler }>({ state: 'IDLE', reassembler: new AcousticFragmentReassembler() })
+  const handshakeRef = useRef<{ state: SenderHandshakeState; privateKey?: Uint8Array; offer?: HandshakeOffer; offerStartedAt?: number; selectedAt?: number; selectedMode?: 8 | 16 | 32; probeMask?: number; estimatedSnrDb?: number; estimatedOfdmSnrDb?: number; fallbackCount?: number; responseCapabilities?: number; responseFormat?: number; responseParity?: boolean; lastResponseAt?: number; lastNackAt?: number; nackRequestId?: number; nacksSent?: number; recoveredFragments?: number; audioMode?: AcousticToneCount; octalSeconds?: number; material?: HandshakeMaterial; reassembler: AcousticFragmentReassembler; denseReassembler?: DenseHandshakeReassembler }>({ state: 'IDLE', reassembler: new AcousticFragmentReassembler() })
   const responseFragmentsRef = useRef(new Set<number>()), readyFragmentsRef = useRef(new Set<number>())
   const fastReadyAssemblerRef = useRef(new FastReadyAssembler())
   const offerHoldMsRef = useRef<number>(OPTICAL_OFFER_HOLD_MS[0])
@@ -32,6 +34,7 @@ export function OpticalFileSender() {
   const stagedArchiveRef = useRef<StagedArchive | null>(null), stagingPromiseRef = useRef<Promise<StagedArchive> | null>(null), stageGenerationRef = useRef(0)
   const profileRef = useRef<OpticalProfile>(DEBUG_PROFILE), alignmentConfirmedRef = useRef(false), startedRef = useRef(false), calibratingRef = useRef(false), manuallyPausedRef = useRef(false), receiverPausedRef = useRef(false), lastControlSequence = useRef<number | null>(null), acknowledgedFloor = useRef(0), nextFrameIdRef = useRef(1)
   const paceController = useRef(new AudioPaceController(DEBUG_PROFILE.targetDisplayFps / DEBUG_PROFILE.frameHoldCount))
+  const erasureBytes = useRef<Uint8Array | null>(null)
   const diskStorageRef = useRef<'checking' | 'available' | 'unavailable'>('checking')
   const [files, setFiles] = useState<File[]>([]), [profile, setProfile] = useState<OpticalProfile>(DEBUG_PROFILE), [transfer, setTransfer] = useState<FileTransfer | null>(null), [running, setRunning] = useState(false), [started, setStarted] = useState(false), [status, setStatus] = useState('Loading erasure codec…'), [frame, setFrame] = useState(0), [currentBlock, setCurrentBlock] = useState(0)
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('direct'), [pairedId, setPairedId] = useState<number | null>(null)
@@ -46,13 +49,17 @@ export function OpticalFileSender() {
   const [calibrating, setCalibrating] = useState(false), [logicalFps, setLogicalFps] = useState(DEBUG_PROFILE.targetDisplayFps / DEBUG_PROFILE.frameHoldCount)
   const [handshakeState, setHandshakeState] = useState<SenderHandshakeState>('IDLE'), [sas, setSas] = useState<string | null>(null)
   const [audioFragmentProgress, setAudioFragmentProgress] = useState({ messageType: 0, heard: 0, total: 0 })
+  const [nackPayload, setNackPayload] = useState<Uint8Array | null>(null)
+  const [modeSelectPayload, setModeSelectPayload] = useState<Uint8Array | null>(null)
+  const [acousticMetrics, setAcousticMetrics] = useState({ mode: '8-FSK', snrDb: 0, probeErrorRate: 0, responseLossRate: 0, retransmissions: 0, elapsedSeconds: 0 })
   const [handsFreePairing, setHandsFreePairing] = useState(true), [verificationSeconds, setVerificationSeconds] = useState(3)
   // The 12 ms mode lost most handshake packets on the observed laptop pair.
   // Keep it available as an explicit experiment; default to the 16 ms mode.
   const [fastAudio, setFastAudio] = useState(false)
+  const [experimentalOfdm, setExperimentalOfdm] = useState(false)
   useEffect(() => { profileRef.current = profile; if (!transferRef.current) { const fps = profile.targetDisplayFps / profile.frameHoldCount; paceController.current = new AudioPaceController(fps); setLogicalFps(fps) } }, [profile])
   useEffect(() => { directoryInput.current?.setAttribute('webkitdirectory', ''); directoryInput.current?.setAttribute('directory', '') }, [])
-  useEffect(() => { let cancelled = false; void ReedSolomonErasure.fromUrl(reedSolomonWasmUrl).then(engine => { if (!cancelled) { codec.current = new ReedSolomonBlockCodec(engine); setStatus('Offline ready. You can disconnect networking before selecting a directory.') } }).catch(() => setStatus('Could not load local erasure codec')); return () => { cancelled = true } }, [])
+  useEffect(() => { let cancelled = false; void fetch(reedSolomonWasmUrl).then(response => response.arrayBuffer()).then(bytes => { if (!cancelled) { erasureBytes.current = new Uint8Array(bytes); codec.current = new ReedSolomonBlockCodec(ReedSolomonErasure.fromBytes(bytes)); setStatus('Offline ready. You can disconnect networking before selecting a directory.') } }).catch(() => setStatus('Could not load local erasure codec')); return () => { cancelled = true } }, [])
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -78,14 +85,15 @@ export function OpticalFileSender() {
   }
   const stopMicrophone = () => { if (audioTimer.current !== null) window.clearInterval(audioTimer.current); audioTimer.current = null; microphone.current?.getTracks().forEach(track => track.stop()); microphone.current = null; void audioContext.current?.close(); audioContext.current = null; audioChunks.current = []; seenPackets.current.clear(); setAudioStatus('Microphone off') }
   useEffect(() => () => stopMicrophone(), [])
-  const beginOffer = () => {
-    const keys = generateEphemeralKeyPair(), offer = makeOffer(keys, HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL | HANDSHAKE_CAPABILITY_COMPACT_READY | HANDSHAKE_CAPABILITY_FAST_READY | (fastAudio ? HANDSHAKE_CAPABILITY_FAST_OCTAL : 0)), compactId = new DataView(offer.sessionId.buffer, offer.sessionId.byteOffset, 4).getUint32(0)
-    handshakeRef.current = { state: 'DISPLAYING_OFFER', privateKey: keys.privateKey, offer, reassembler: new AcousticFragmentReassembler() }
+  const beginOffer = (maximumMode: 8 | 16 | 32 = experimentalOfdm ? 32 : 16, fallbackCount = 0) => {
+    const keys = generateEphemeralKeyPair(), offer = makeOffer(keys, HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL | HANDSHAKE_CAPABILITY_COMPACT_READY | HANDSHAKE_CAPABILITY_FAST_READY | HANDSHAKE_CAPABILITY_DENSE_RESPONSE | HANDSHAKE_CAPABILITY_RESPONSE_PARITY | (maximumMode >= 16 ? HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO | HANDSHAKE_CAPABILITY_HEX_FSK : 0) | (maximumMode === 32 ? HANDSHAKE_CAPABILITY_OFDM : 0) | (fastAudio && fallbackCount === 0 ? HANDSHAKE_CAPABILITY_FAST_OCTAL : 0)), compactId = new DataView(offer.sessionId.buffer, offer.sessionId.byteOffset, 4).getUint32(0)
+    handshakeRef.current = { state: 'DISPLAYING_OFFER', privateKey: keys.privateKey, offer, offerStartedAt: performance.now(), fallbackCount, reassembler: new AcousticFragmentReassembler(), denseReassembler: new DenseHandshakeReassembler(offer.sessionId, () => new ReedSolomonBlockCodec(ReedSolomonErasure.fromBytes(new Uint8Array(erasureBytes.current!).buffer))) }
     offerHoldMsRef.current = OPTICAL_OFFER_HOLD_MS[0]
     autoPrepareAttemptedRef.current = false; sasManuallyVerifiedRef.current = false
-    responseFragmentsRef.current.clear(); readyFragmentsRef.current.clear(); fastReadyAssemblerRef.current.clear(); setAudioFragmentProgress({ messageType: 0, heard: 0, total: 0 })
+    responseFragmentsRef.current.clear(); readyFragmentsRef.current.clear(); fastReadyAssemblerRef.current.clear(); setAudioFragmentProgress({ messageType: 0, heard: 0, total: 0 }); setNackPayload(null); setModeSelectPayload(null)
     pairedIdRef.current = compactId; setPairedId(compactId); setSas(null); setHandshakeState('DISPLAYING_OFFER')
-    setAudioStatus(`Microphone listening; displaying optical offer. Eight-tone ${fastAudio ? '12 ms' : '16 ms'} audio requested…`)
+    setAcousticMetrics({ mode: maximumMode === 32 ? 'probing OFDM' : maximumMode === 16 ? 'probing 16-FSK' : '8-FSK baseline', snrDb: 0, probeErrorRate: 0, responseLossRate: 0, retransmissions: fallbackCount, elapsedSeconds: 0 })
+    setAudioStatus(maximumMode >= 16 ? `Microphone listening; displaying optical offer and measuring 8/16-FSK${maximumMode === 32 ? '/OFDM' : ''} probes…` : `Retrying with robust eight-tone ${fastAudio ? '12 ms' : '16 ms'} audio and a fresh secure session…`)
   }
   const discardStagedArchive = () => {
     stageGenerationRef.current += 1
@@ -125,6 +133,41 @@ export function OpticalFileSender() {
     void task.finally(() => { if (stagingPromiseRef.current === task) { stagingPromiseRef.current = null; setStagingZip(false) } }).catch(() => {})
     return task
   }
+  const acceptResponseMessage = (message: Uint8Array, recovered = 0) => {
+    const response = decodeHandshakeResponse(message), handshake = handshakeRef.current
+    if (!response || !handshake.offer || !handshake.privateKey || (handshake.state !== 'DISPLAYING_OFFER' && handshake.state !== 'WAITING_FOR_AUDIO_RESPONSE' && handshake.state !== 'ASSEMBLING_AUDIO_RESPONSE')) return
+    try {
+      if (!!(response.capabilities & HANDSHAKE_CAPABILITY_DENSE_RESPONSE) !== (handshake.responseFormat === HANDSHAKE_NACK_DENSE) || !!(response.capabilities & HANDSHAKE_CAPABILITY_RESPONSE_PARITY) !== !!handshake.responseParity) throw new Error('Handshake fragment format disagreed with negotiated capabilities')
+      if (!selectedAcousticModeMatches(handshake.selectedMode, response.capabilities, handshake.audioMode || 2)) throw new Error('Measured audio mode disagreed with transcript-bound response')
+      handshake.state = 'DERIVING_KEYS'; setHandshakeState('DERIVING_KEYS')
+      handshake.material = deriveHandshakeMaterial(handshake.offer, response, handshake.privateKey)
+      handshake.responseCapabilities = response.capabilities
+      handshake.audioMode = runtimeToneCount(response.capabilities, handshake.audioMode || 2)
+      if (handshake.audioMode === 8 && handshake.octalSeconds !== octalSymbolSeconds(handshake.offer.capabilities, response.capabilities)) throw new Error('Eight-tone symbol rate did not match the negotiated response')
+      handshake.recoveredFragments = recovered; setNackPayload(null); setModeSelectPayload(null)
+      setAcousticMetrics(previous => ({ ...previous, mode: handshake.audioMode === 32 ? 'OFDM' : `${handshake.audioMode}-FSK`, retransmissions: (handshake.nacksSent || 0) + (handshake.fallbackCount || 0), elapsedSeconds: (performance.now() - (handshake.offerStartedAt || performance.now())) / 1000 }))
+      handshake.state = 'AWAITING_USER_VERIFICATION'; setHandshakeState('AWAITING_USER_VERIFICATION'); setSas(handshake.material.sas)
+      setAudioStatus(`Receiver detected via ${handshake.audioMode === 32 ? 'OFDM' : `${handshake.audioMode}-tone audio`}${recovered ? ` · ${recovered} fragment${recovered === 1 ? '' : 's'} repaired by parity` : ''}${handshake.nacksSent ? ` · ${handshake.nacksSent} selective optical NACK${handshake.nacksSent === 1 ? '' : 's'}` : ''}. Verify the pairing code on both devices.`)
+    } catch (error) { handshake.privateKey?.fill(0); handshake.material?.keys.opticalEncryptionKey.fill(0); handshake.material?.keys.handshakeConfirmKey.fill(0); handshake.material?.keys.sessionBindingKey.fill(0); handshake.reassembler.clear(); handshake.denseReassembler?.clear(); handshake.state = 'FAILED'; setNackPayload(null); setModeSelectPayload(null); setHandshakeState('FAILED'); setAudioStatus(`Handshake response rejected: ${error instanceof Error ? error.message : 'invalid session'}`) }
+  }
+  const selectMeasuredMode = (mode: 8 | 16 | 32) => {
+    const handshake = handshakeRef.current
+    if (!handshake.offer || handshake.selectedMode || !(handshake.offer.capabilities & HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO)) return
+    handshake.selectedMode = mode; handshake.selectedAt = performance.now()
+    const probeMask = handshake.probeMask || 0, snrDb = mode === 32 ? handshake.estimatedOfdmSnrDb || 0 : handshake.estimatedSnrDb || 0
+    setModeSelectPayload(encodeAudioModeSelect(handshake.offer.sessionId, mode, probeMask, snrDb))
+    handshake.state = 'WAITING_FOR_AUDIO_RESPONSE'; setHandshakeState('WAITING_FOR_AUDIO_RESPONSE')
+    const expectedProbes = handshake.offer.capabilities & HANDSHAKE_CAPABILITY_OFDM ? 3 : 2
+    const decodedProbes = (probeMask & 1) + ((probeMask >>> 1) & 1) + ((probeMask >>> 2) & 1)
+    setAcousticMetrics(previous => ({ ...previous, mode: mode === 32 ? 'OFDM selected' : `${mode}-FSK selected`, snrDb, probeErrorRate: (expectedProbes - decodedProbes) / expectedProbes }))
+    setAudioStatus(`Channel probe: ${decodedProbes}/${expectedProbes} CRC-valid · estimated margin ${snrDb.toFixed(1)} dB · selecting ${mode === 32 ? 'OFDM' : `${mode}-FSK`} optically`)
+  }
+  const restartAtSaferMode = (saferMode: 8 | 16) => {
+    const handshake = handshakeRef.current
+    handshake.privateKey?.fill(0); handshake.material?.keys.opticalEncryptionKey.fill(0); handshake.material?.keys.handshakeConfirmKey.fill(0); handshake.material?.keys.sessionBindingKey.fill(0)
+    handshake.reassembler.clear(); handshake.denseReassembler?.clear(); seenPackets.current.clear()
+    beginOffer(saferMode, (handshake.fallbackCount || 0) + 1)
+  }
   const startMicrophone = async () => {
     if ((connectionMode === 'direct' && !transferRef.current) || (connectionMode === 'audio' && (!files.length || !codec.current || diskStorageRef.current === 'checking')) || microphone.current) return
     if (connectionMode === 'audio') {
@@ -151,17 +194,34 @@ export function OpticalFileSender() {
         const samples = new Float32Array(length); let offset = 0
         for (const chunk of audioChunks.current) { samples.set(chunk, offset); offset += chunk.length }
         const awaitingResponse = connectionMode === 'audio' && !transferRef.current && (handshakeRef.current.state === 'DISPLAYING_OFFER' || handshakeRef.current.state === 'WAITING_FOR_AUDIO_RESPONSE' || handshakeRef.current.state === 'ASSEMBLING_AUDIO_RESPONSE')
-        const modes: AcousticToneCount[] = awaitingResponse ? [2, 4, 8] : [connectionMode === 'audio' ? handshakeRef.current.audioMode || 2 : 2]
-        const packets = modes.flatMap(mode => {
+        const modes: AcousticToneCount[] = awaitingResponse ? (handshakeRef.current.offer?.capabilities || 0) & HANDSHAKE_CAPABILITY_OFDM ? [2, 4, 8, 16, 32] : (handshakeRef.current.offer?.capabilities || 0) & HANDSHAKE_CAPABILITY_HEX_FSK ? [2, 4, 8, 16] : [2, 4, 8] : [connectionMode === 'audio' ? handshakeRef.current.audioMode || 2 : 2]
+        const packets = modes.flatMap<{ packet: ControlPacket; mode: AcousticToneCount; symbolSeconds: number; estimatedSnrDb: number }>(mode => {
           const rates = mode === 8 && awaitingResponse && (handshakeRef.current.offer?.capabilities || 0) & HANDSHAKE_CAPABILITY_FAST_OCTAL ? [FSK_SYMBOL_SECONDS, OCTAL_FAST_SYMBOL_SECONDS] : [mode === 8 ? octalSymbolSeconds(handshakeRef.current.offer?.capabilities || 0, handshakeRef.current.responseCapabilities || 0) : FSK_SYMBOL_SECONDS]
-          const capture = mode === 8 && samples.length > context.sampleRate * 3 ? samples.subarray(samples.length - Math.floor(context.sampleRate * 3)) : samples
-          return rates.flatMap(symbolSeconds => (mode === 8 ? decodeOctalFskSamples(capture, context.sampleRate, symbolSeconds) : mode === 4 ? decodeQuadFskSamples(samples, context.sampleRate) : decodeFskSamples(samples, context.sampleRate)).map(packet => ({ packet, mode, symbolSeconds })))
+          // The microphone scan runs once per second. Keep an overlapping
+          // two-second OFDM window so a 200 ms packet crossing a scan boundary
+          // is still captured whole on the following scan.
+          const captureSeconds = mode === 32 ? 2 : 3
+          const capture = (mode === 8 || mode === 16 || mode === 32) && samples.length > context.sampleRate * captureSeconds ? samples.subarray(samples.length - Math.floor(context.sampleRate * captureSeconds)) : samples
+          return rates.flatMap<{ packet: ControlPacket; mode: AcousticToneCount; symbolSeconds: number; estimatedSnrDb: number }>(symbolSeconds => mode === 32
+            ? decodeOfdmSamplesWithMetrics(capture, context.sampleRate).map(({ packet, estimatedSnrDb }) => ({ packet, mode, symbolSeconds, estimatedSnrDb }))
+            : mode === 16
+            ? decodeHexFskSamplesWithMetrics(capture, context.sampleRate).map(({ packet, estimatedSnrDb }) => ({ packet, mode, symbolSeconds, estimatedSnrDb }))
+            : (mode === 8 ? decodeOctalFskSamples(capture, context.sampleRate, symbolSeconds) : mode === 4 ? decodeQuadFskSamples(samples, context.sampleRate) : decodeFskSamples(samples, context.sampleRate)).map(packet => ({ packet, mode, symbolSeconds, estimatedSnrDb: 0 })))
         })
-        for (const { packet, mode, symbolSeconds } of packets) {
+        for (const { packet, mode, symbolSeconds, estimatedSnrDb } of packets) {
           const key = `${packet.transferId}:${packet.type}:${packet.sequence}`
           if (seenPackets.current.has(key)) continue
           if (seenPackets.current.size > 256) seenPackets.current.clear()
           seenPackets.current.add(key)
+          if (connectionMode === 'audio' && packet.type === ControlType.ACOUSTIC_PROBE && packet.payload.length === 3 && pairedIdRef.current === packet.transferId && handshakeRef.current.offer && !handshakeRef.current.selectedMode && (handshakeRef.current.offer.capabilities & HANDSHAKE_CAPABILITY_HEX_FSK) && packet.payload[0] === denseHandshakeSessionTag(handshakeRef.current.offer.sessionId) && packet.payload[1] === (mode === 8 ? 0 : mode === 16 ? 1 : mode === 32 ? 2 : 255) && packet.payload[2] === mode && (mode !== 32 || handshakeRef.current.offer.capabilities & HANDSHAKE_CAPABILITY_OFDM)) {
+            const handshake = handshakeRef.current
+            handshake.probeMask = (handshake.probeMask || 0) | (1 << packet.payload[1])
+            if (mode === 16) handshake.estimatedSnrDb = estimatedSnrDb
+            if (mode === 32) handshake.estimatedOfdmSnrDb = estimatedSnrDb
+            const expectedMask = handshake.offer!.capabilities & HANDSHAKE_CAPABILITY_OFDM ? 7 : 3
+            if (handshake.probeMask === expectedMask) selectMeasuredMode(chooseAdaptiveAudioMode(handshake.offer!.capabilities, { octalDecoded: !!(handshake.probeMask & 1), hexDecoded: !!(handshake.probeMask & 2), estimatedSnrDb: handshake.estimatedSnrDb || 0, ofdmDecoded: !!(handshake.probeMask & 4), ofdmSnrDb: handshake.estimatedOfdmSnrDb || 0 }))
+            continue
+          }
           if (connectionMode === 'audio' && !transferRef.current && profileRef.current.colorMode === 'rgb' && pairedIdRef.current !== null && packet.transferId === pairedIdRef.current && packet.type === ControlType.OPTICAL_QUALITY && (handshakeRef.current.state === 'DISPLAYING_OFFER' || handshakeRef.current.state === 'WAITING_FOR_AUDIO_RESPONSE' || handshakeRef.current.state === 'ASSEMBLING_AUDIO_RESPONSE')) {
             const nextHold = nextOpticalOfferHold(offerHoldMsRef.current, pairedIdRef.current, opticalProfileNumber(profileRef.current), packet)
             if (nextHold > offerHoldMsRef.current) {
@@ -180,42 +240,50 @@ export function OpticalFileSender() {
             }
             if (mac && handshake.material && equalBytes(mac, readyConfirmFast(handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash))) {
               handshake.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED')
-              setAudioStatus(`${handshake.audioMode || 2}-tone audio established · ${sasManuallyVerifiedRef.current ? 'pairing code manually confirmed' : 'hands-free pairing · peer identity unverified'} · Encrypted · AES-256-GCM`)
+              setAudioStatus(`${handshake.audioMode === 32 ? 'OFDM' : `${handshake.audioMode || 2}-tone audio`} established · ${sasManuallyVerifiedRef.current ? 'pairing code manually confirmed' : 'hands-free pairing · peer identity unverified'} · Encrypted · AES-256-GCM`)
             } else if (mac) setAudioStatus('Receiver READY failed transcript authentication; waiting for a valid confirmation…')
+            setAudioPackets(value => value + 1); continue
+          }
+          if (connectionMode === 'audio' && !transferRef.current && pairedIdRef.current !== null && packet.transferId === pairedIdRef.current && packet.type === ControlType.HANDSHAKE_DENSE_FRAGMENT && handshakeRef.current.offer && (handshakeRef.current.offer.capabilities & HANDSHAKE_CAPABILITY_DENSE_RESPONSE) && (handshakeRef.current.state === 'DISPLAYING_OFFER' || handshakeRef.current.state === 'WAITING_FOR_AUDIO_RESPONSE' || handshakeRef.current.state === 'ASSEMBLING_AUDIO_RESPONSE')) {
+            const handshake = handshakeRef.current, fragment = parseDenseHandshakeFragment(packet)
+            if (!fragment || !handshake.offer || fragment.sessionTag !== denseHandshakeSessionTag(handshake.offer.sessionId) || handshake.responseFormat && handshake.responseFormat !== HANDSHAKE_NACK_DENSE || handshake.responseParity !== undefined && handshake.responseParity !== !!fragment.parityCount) continue
+            const assembled = handshake.denseReassembler?.add(packet)
+            const progress = handshake.denseReassembler?.progress()
+            if (!progress && !assembled) continue
+            handshake.responseFormat = HANDSHAKE_NACK_DENSE
+            handshake.responseParity = !!fragment.parityCount
+            handshake.audioMode = Math.min(handshake.audioMode || mode, mode) as AcousticToneCount
+            if (mode === 8) handshake.octalSeconds = symbolSeconds
+            if (!responseFragmentsRef.current.has(fragment.index)) { responseFragmentsRef.current.add(fragment.index); handshake.lastResponseAt = performance.now() }
+            setAudioFragmentProgress({ messageType: 1, heard: responseFragmentsRef.current.size, total: fragment.dataCount + fragment.parityCount })
+            if (handshake.state !== 'ASSEMBLING_AUDIO_RESPONSE') { handshake.state = 'ASSEMBLING_AUDIO_RESPONSE'; setHandshakeState('ASSEMBLING_AUDIO_RESPONSE') }
+            if (assembled) acceptResponseMessage(assembled.message, assembled.recovered)
+            else setAudioStatus(`Received ${responseFragmentsRef.current.size}/${fragment.dataCount + fragment.parityCount} dense audio fragments · ${progress?.missing.length || 0} data missing`)
             setAudioPackets(value => value + 1); continue
           }
           if (connectionMode === 'audio' && !transferRef.current && pairedIdRef.current !== null && packet.transferId === pairedIdRef.current && packet.type === ControlType.HANDSHAKE_FRAGMENT) {
             const fragment = parseHandshakeFragment(packet)
-            if (fragment && fragment.sessionTag === (pairedIdRef.current & 0xffff) && ((fragment.messageType === 1 && (handshakeRef.current.state === 'DISPLAYING_OFFER' || handshakeRef.current.state === 'WAITING_FOR_AUDIO_RESPONSE' || handshakeRef.current.state === 'ASSEMBLING_AUDIO_RESPONSE')) || (fragment.messageType === 2 && handshakeRef.current.state === 'WAITING_FOR_READY'))) {
+            if (fragment && fragment.sessionTag === (pairedIdRef.current & 0xffff) && ((fragment.messageType === 1 && (handshakeRef.current.state === 'DISPLAYING_OFFER' || handshakeRef.current.state === 'WAITING_FOR_AUDIO_RESPONSE' || handshakeRef.current.state === 'ASSEMBLING_AUDIO_RESPONSE') && (!handshakeRef.current.responseFormat || handshakeRef.current.responseFormat === HANDSHAKE_NACK_LEGACY)) || (fragment.messageType === 2 && handshakeRef.current.state === 'WAITING_FOR_READY'))) {
               if (fragment.messageType === 1) {
+                handshakeRef.current.responseFormat = HANDSHAKE_NACK_LEGACY
                 handshakeRef.current.audioMode = Math.min(handshakeRef.current.audioMode || mode, mode) as AcousticToneCount
                 if (mode === 8) handshakeRef.current.octalSeconds = symbolSeconds
               }
               const seen = fragment.messageType === 1 ? responseFragmentsRef.current : readyFragmentsRef.current
-              seen.add(fragment.index)
+              if (!seen.has(fragment.index)) { seen.add(fragment.index); if (fragment.messageType === 1) handshakeRef.current.lastResponseAt = performance.now() }
               setAudioFragmentProgress({ messageType: fragment.messageType, heard: seen.size, total: fragment.count })
               if (fragment.messageType === 1 && (handshakeRef.current.state === 'DISPLAYING_OFFER' || handshakeRef.current.state === 'WAITING_FOR_AUDIO_RESPONSE')) {
                 handshakeRef.current.state = 'ASSEMBLING_AUDIO_RESPONSE'; setHandshakeState('ASSEMBLING_AUDIO_RESPONSE')
               }
               if (handshakeRef.current.state === 'ASSEMBLING_AUDIO_RESPONSE' || handshakeRef.current.state === 'WAITING_FOR_READY') setAudioStatus(`Received ${seen.size}/${fragment.count} acoustic handshake fragments`)
-            }
+            } else continue
             const assembled = handshakeRef.current.reassembler.add(packet)
             if (assembled?.messageType === 1) {
-              const response = decodeHandshakeResponse(assembled.message), handshake = handshakeRef.current
-              if (!response || !handshake.offer || !handshake.privateKey || (handshake.state !== 'DISPLAYING_OFFER' && handshake.state !== 'WAITING_FOR_AUDIO_RESPONSE' && handshake.state !== 'ASSEMBLING_AUDIO_RESPONSE')) continue
-              try {
-                handshake.state = 'DERIVING_KEYS'; setHandshakeState('DERIVING_KEYS')
-                handshake.material = deriveHandshakeMaterial(handshake.offer, response, handshake.privateKey)
-                handshake.responseCapabilities = response.capabilities
-                handshake.audioMode = runtimeToneCount(response.capabilities, handshake.audioMode || 2)
-                if (handshake.audioMode === 8 && handshake.octalSeconds !== octalSymbolSeconds(handshake.offer.capabilities, response.capabilities)) throw new Error('Eight-tone symbol rate did not match the negotiated response')
-                handshake.state = 'AWAITING_USER_VERIFICATION'; setHandshakeState('AWAITING_USER_VERIFICATION'); setSas(handshake.material.sas)
-                setAudioStatus(`Receiver detected via ${handshake.audioMode || 2}-tone audio. Verify the pairing code on both devices.`)
-              } catch (error) { handshake.state = 'FAILED'; setHandshakeState('FAILED'); setAudioStatus(`Handshake response rejected: ${error instanceof Error ? error.message : 'invalid session'}`) }
+              acceptResponseMessage(assembled.message)
             } else if (assembled?.messageType === 2) {
               const handshake = handshakeRef.current, ready = decodeReadyConfirm(assembled.message)
               if (ready && handshake.offer && handshake.material && verifyReadyConfirm(handshake.offer.sessionId, handshake.material.keys.handshakeConfirmKey, handshake.material.transcriptHash, ready)) {
-                handshake.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED'); setAudioStatus(`${handshake.audioMode || 2}-tone audio established · ${sasManuallyVerifiedRef.current ? 'pairing code manually confirmed' : 'hands-free pairing · peer identity unverified'} · Encrypted · AES-256-GCM`)
+                handshake.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED'); setAudioStatus(`${handshake.audioMode === 32 ? 'OFDM' : `${handshake.audioMode || 2}-tone audio`} established · ${sasManuallyVerifiedRef.current ? 'pairing code manually confirmed' : 'hands-free pairing · peer identity unverified'} · Encrypted · AES-256-GCM`)
               } else {
                 setAudioStatus('Receiver confirmation was received but failed session authentication; waiting for a valid READY…')
               }
@@ -290,6 +358,33 @@ export function OpticalFileSender() {
             break
           }
         }
+        const handshake = handshakeRef.current, compactId = pairedIdRef.current
+        if (connectionMode === 'audio' && handshake.offerStartedAt) setAcousticMetrics(previous => ({ ...previous, elapsedSeconds: (performance.now() - handshake.offerStartedAt!) / 1000, retransmissions: (handshake.nacksSent || 0) + (handshake.fallbackCount || 0) }))
+        if (connectionMode === 'audio' && handshake.offer && (handshake.offer.capabilities & HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO) && !handshake.selectedMode && (handshake.state === 'DISPLAYING_OFFER' || handshake.state === 'WAITING_FOR_AUDIO_RESPONSE') && performance.now() - (handshake.offerStartedAt || 0) >= 4500) {
+          const mask = handshake.probeMask || 0
+          selectMeasuredMode(chooseAdaptiveAudioMode(handshake.offer.capabilities, { octalDecoded: !!(mask & 1), hexDecoded: !!(mask & 2), estimatedSnrDb: handshake.estimatedSnrDb || 0, ofdmDecoded: !!(mask & 4), ofdmSnrDb: handshake.estimatedOfdmSnrDb || 0 }))
+        }
+        const selectionElapsed = handshake.selectedAt ? performance.now() - handshake.selectedAt : 0
+        const saferMode = handshake.selectedMode ? acousticFallbackDecision(handshake.selectedMode, selectionElapsed, performance.now() - (handshake.lastResponseAt || handshake.selectedAt || performance.now()), responseFragmentsRef.current.size) : null
+        if (connectionMode === 'audio' && handshake.selectedMode && handshake.state !== 'AWAITING_USER_VERIFICATION' && handshake.state !== 'ESTABLISHED' && handshake.state !== 'SENDING_KEY_CONFIRM' && handshake.state !== 'WAITING_FOR_READY' && (saferMode || (handshake.selectedMode === 8 && !handshake.lastResponseAt && selectionElapsed > 9000))) {
+          if (saferMode) restartAtSaferMode(saferMode)
+          else { handshake.privateKey?.fill(0); handshake.denseReassembler?.clear(); beginOffer(8, (handshake.fallbackCount || 0) + 1) }
+          return
+        }
+        if (connectionMode === 'audio' && compactId !== null && handshake.state === 'ASSEMBLING_AUDIO_RESPONSE' && handshake.offer && handshake.responseFormat && handshake.lastResponseAt) {
+          const denseProgress = handshake.responseFormat === HANDSHAKE_NACK_DENSE ? handshake.denseReassembler?.progress() : null
+          const legacyProgress = handshake.responseFormat === HANDSHAKE_NACK_LEGACY ? handshake.reassembler.missing(compactId, compactId & 0xffff, 1) : null
+          const count = denseProgress?.dataCount || legacyProgress?.count
+          const missing = denseProgress?.missing || legacyProgress?.missing || [], now = performance.now()
+          if (count && count <= 31 && missing.length && now - handshake.lastResponseAt >= 1800 && now - (handshake.lastNackAt || 0) >= 3000) {
+            setAcousticMetrics(previous => ({ ...previous, responseLossRate: missing.length / count }))
+            const mask = missing.reduce((value, index) => value | (1 << index), 0) >>> 0
+            const requestId = ((handshake.nackRequestId || 0) + 1) & 0xffff
+            handshake.nackRequestId = requestId; handshake.lastNackAt = now; handshake.nacksSent = (handshake.nacksSent || 0) + 1
+            setNackPayload(encodeHandshakeNack(handshake.offer.sessionId, handshake.responseFormat, count, requestId, mask))
+            setAudioStatus(`Requesting only ${missing.length} missing response fragment${missing.length === 1 ? '' : 's'} optically · NACK ${handshake.nacksSent}`)
+          }
+        }
       }, 1000)
       if (connectionMode === 'audio') beginOffer()
       else setAudioStatus('Listening for physical speaker feedback')
@@ -304,7 +399,7 @@ export function OpticalFileSender() {
       ? handshake.responseCapabilities && (handshake.responseCapabilities & HANDSHAKE_CAPABILITY_OCTAL_FSK)
         ? encodeKeyConfirmAudioMode(handshake.offer.sessionId, handshake.audioMode || 2, keyConfirmAudioMode(handshake.material!.keys.handshakeConfirmKey, handshake.material!.transcriptHash, handshake.audioMode || 2))
         : encodeKeyConfirm(handshake.offer.sessionId, keyConfirm(handshake.material!.keys.handshakeConfirmKey, handshake.material!.transcriptHash))
-      : encodeHandshakeOffer(handshake.offer)
+      : nackPayload || modeSelectPayload || encodeHandshakeOffer(handshake.offer)
     let cancelled = false, frameId = 0
     const show = () => {
       if (cancelled) return
@@ -315,7 +410,7 @@ export function OpticalFileSender() {
     }
     show()
     return () => { cancelled = true }
-  }, [connectionMode, transfer, handshakeState])
+  }, [connectionMode, transfer, handshakeState, nackPayload, modeSelectPayload])
 
   const acceptSas = (manuallyVerified = false) => {
     const handshake = handshakeRef.current
@@ -331,7 +426,7 @@ export function OpticalFileSender() {
     const confirm = window.setTimeout(() => acceptSas(false), 3000)
     return () => { window.clearInterval(countdown); window.clearTimeout(confirm) }
   }, [connectionMode, handsFreePairing, handshakeState])
-  const cancelHandshake = () => { const handshake = handshakeRef.current; handshake.privateKey?.fill(0); handshake.material?.keys.opticalEncryptionKey.fill(0); handshake.material?.keys.handshakeConfirmKey.fill(0); handshake.material?.keys.sessionBindingKey.fill(0); handshake.reassembler.clear(); fastReadyAssemblerRef.current.clear(); handshakeRef.current = { state: 'CANCELLED', reassembler: new AcousticFragmentReassembler() }; responseFragmentsRef.current.clear(); readyFragmentsRef.current.clear(); autoPrepareAttemptedRef.current = false; sasManuallyVerifiedRef.current = false; setAudioFragmentProgress({ messageType: 0, heard: 0, total: 0 }); pairedIdRef.current = null; setPairedId(null); setSas(null); setHandshakeState('CANCELLED'); renderer.current?.clear(); setAudioStatus('Secure pairing cancelled') }
+  const cancelHandshake = () => { const handshake = handshakeRef.current; handshake.privateKey?.fill(0); handshake.material?.keys.opticalEncryptionKey.fill(0); handshake.material?.keys.handshakeConfirmKey.fill(0); handshake.material?.keys.sessionBindingKey.fill(0); handshake.reassembler.clear(); handshake.denseReassembler?.clear(); fastReadyAssemblerRef.current.clear(); handshakeRef.current = { state: 'CANCELLED', reassembler: new AcousticFragmentReassembler() }; responseFragmentsRef.current.clear(); readyFragmentsRef.current.clear(); autoPrepareAttemptedRef.current = false; sasManuallyVerifiedRef.current = false; setAudioFragmentProgress({ messageType: 0, heard: 0, total: 0 }); setNackPayload(null); setModeSelectPayload(null); pairedIdRef.current = null; setPairedId(null); setSas(null); setHandshakeState('CANCELLED'); renderer.current?.clear(); setAudioStatus('Secure pairing cancelled') }
   const encryptTransferBlock = async (item: FileTransfer, blockId: number, source: Uint8Array) => {
     if (!item.secure) return source
     return item.secure.encryptor.encrypt(blockId, source)
@@ -509,7 +604,7 @@ export function OpticalFileSender() {
   return <section style={{ maxWidth: 1180, margin: '20px auto', padding: 16, fontFamily: 'system-ui, sans-serif', textAlign: 'center' }}>
     <h2>Optical ZIP transfer</h2><p>Wait for “Offline ready” before disconnecting networking. Large directories use a bounded-memory ZIP by default. File bytes leave only as display pixels; this mode uses no network acknowledgement.</p><label>ZIP staging <select value={zipMode} disabled={!!transfer || preparing || stagingZip || !!microphone.current} onChange={event => { discardStagedArchive(); setZipMode(event.target.value as 'source' | 'compressed') }}><option value="source">Source files, no disk staging (uncompressed)</option><option value="compressed" disabled={diskStorage !== 'available'}>Browser-private disk (compressed){diskStorage === 'checking' ? ' — checking' : diskStorage === 'unavailable' ? ' — unavailable' : ''}</option></select></label>
     <label>Connection <select value={connectionMode} disabled={!!transfer || !!microphone.current} onChange={event => { const mode = event.target.value as ConnectionMode; setConnectionMode(mode); pairedIdRef.current = null; setPairedId(null); receiverStorageRef.current = 'unknown'; setReceiverStorage('unknown'); setAudioStatus('Microphone off') }}><option value="direct">Direct optical (existing)</option><option value="audio">Audio pairing + ACK</option></select></label>
-    <label>Profile <select value={profile.id} disabled={!!transfer || (connectionMode === 'audio' && !!microphone.current)} onChange={event => setProfile(OPTICAL_PROFILES.find(item => item.id === event.target.value) || DEBUG_PROFILE)}>{OPTICAL_PROFILES.map(item => <option key={item.id} value={item.id}>{item.gridWidth}×{item.gridHeight} / {item.colorMode === 'rgb' ? 'RGB + black · robust 2×2 (experimental)' : item.bitsPerSymbol === 2 ? '4-level gray (experimental)' : 'binary'}</option>)}</select></label>
+    <label>Profile <select value={profile.id} disabled={!!transfer || (connectionMode === 'audio' && !!microphone.current)} onChange={event => setProfile(OPTICAL_PROFILES.find(item => item.id === event.target.value) || DEBUG_PROFILE)}>{OPTICAL_PROFILES.map(item => <option key={item.id} value={item.id}>{item.gridWidth}×{item.gridHeight} / {item.colorMode === 'rgb' ? 'RGB + black · robust 2×2 (experimental)' : item.bitsPerSymbol === 2 ? '4-level gray (experimental)' : item.id === 'binary-240x120' ? 'binary widescreen (+20% cells; test camera)' : 'binary'}</option>)}</select></label>
     <input ref={directoryInput} type="file" multiple disabled={!!microphone.current || !!transfer || preparing || stagingZip} onChange={event => { discardStagedArchive(); autoPrepareAttemptedRef.current = false; setFiles(Array.from(event.target.files || [])) }} style={{ display: 'block', margin: '12px auto' }} />
     {connectionMode === 'direct' && <><button disabled={!files.length || !codec.current || diskStorage === 'checking' || !!transfer || preparing || completed} onClick={() => void prepare()}>{preparing ? 'Preparing ZIP…' : 'Prepare ZIP'}</button>{' '}</>}
     {connectionMode === 'audio' && handshakeState === 'ESTABLISHED' && !transfer && autoPrepareAttemptedRef.current && !preparing && <><button onClick={() => void prepare()}>Retry ZIP preparation</button>{' '}</>}
@@ -518,10 +613,10 @@ export function OpticalFileSender() {
     <button disabled={!!microphone.current || completed || (connectionMode === 'direct' && !transfer) || (connectionMode === 'audio' && (!files.length || !codec.current || diskStorage === 'checking'))} onClick={startHandsFreeTransfer}>{connectionMode === 'audio' ? 'Start hands-free encrypted transfer' : 'Enable acoustic feedback'}</button>{' '}
     {connectionMode === 'audio' && pairedId !== null && !transfer && <button disabled={preparing} onClick={() => { cancelHandshake(); seenPackets.current.clear(); beginOffer(); setStatus('Showing a fresh optical offer for a new receiver.') }}>New pairing offer</button>}{' '}
     <button disabled={preparing} onClick={resetTransfer}>Reset</button>
-    {connectionMode === 'audio' && <><p>Select files first. Start enables the microphone, prepares the ZIP locally, enters full screen, and sends automatically after the receiver confirms the session. The receiver sends its response through its speaker.</p><label><input type="checkbox" checked={fastAudio} disabled={!!microphone.current} onChange={event => setFastAudio(event.target.checked)} /> Faster 8-tone audio (12 ms symbols; turn off if the acoustic link misses packets)</label><br /><label><input type="checkbox" checked={handsFreePairing} onChange={event => setHandsFreePairing(event.target.checked)} /> Hands-free code continuation after 3 seconds (encrypted, but peer identity not verified)</label></>}
-    <p>{status}{stagingZip && ' · ZIP preparation in progress'}</p><p>{audioStatus}{pairedId !== null && <span> · session {pairedId.toString(16).padStart(8, '0')} · receiver storage {receiverStorage}</span>} · {audioPackets} control packets received</p>{connectionMode === 'audio' && <p>Secure handshake: {handshakeState}{audioFragmentProgress.total > 0 && handshakeState !== 'ESTABLISHED' && ` · ${audioFragmentProgress.heard}/${audioFragmentProgress.total} ${audioFragmentProgress.messageType === 1 ? 'response' : 'confirmation'} fragments heard`}{handshakeState === 'ESTABLISHED' && ` · Encrypted · AES-256-GCM · ${sasManuallyVerifiedRef.current ? 'code manually confirmed' : 'peer identity unverified'}`}</p>}{transfer && <p>Transfer {transfer.id.toString(16).padStart(8, '0')} · {transfer.archiveBytes.toLocaleString()} ZIP bytes · block {currentBlock + 1} / {transfer.totalBlocks} · {ackCount} blocks acknowledged · 8 source + 2 repair symbols · optical frame sequence {frame} (repeats do not advance blocks){connectionMode === 'audio' && ` · Encrypted · AES-256-GCM · camera alignment ${alignmentConfirmed ? 'confirmed by sound' : 'awaiting sound'} · ${logicalFps} logical FPS`}</p>}
+    {connectionMode === 'audio' && <><p>Select files first. Start enables the microphone, prepares the ZIP locally, enters full screen, and sends automatically after the receiver confirms the session. The receiver sends its response through its speaker.</p><label><input type="checkbox" checked={fastAudio} disabled={!!microphone.current} onChange={event => setFastAudio(event.target.checked)} /> Faster 8-tone audio (12 ms symbols; turn off if the acoustic link misses packets)</label><br /><label><input type="checkbox" checked={experimentalOfdm} disabled={!!microphone.current} onChange={event => setExperimentalOfdm(event.target.checked)} /> Experimental OFDM audio (automatically falls back to 16-/8-FSK if decoding fails)</label><br /><label><input type="checkbox" checked={handsFreePairing} onChange={event => setHandsFreePairing(event.target.checked)} /> Hands-free code continuation after 3 seconds (encrypted, but peer identity not verified)</label></>}
+    <p>{status}{stagingZip && ' · ZIP preparation in progress'}</p><p>{audioStatus}{pairedId !== null && <span> · session {pairedId.toString(16).padStart(8, '0')} · receiver storage {receiverStorage}</span>} · {audioPackets} control packets received</p>{connectionMode === 'audio' && <p>Secure handshake: {handshakeState} · {acousticMetrics.mode} · estimated acoustic margin {acousticMetrics.snrDb.toFixed(1)} dB · probe errors {(acousticMetrics.probeErrorRate * 100).toFixed(0)}% · response loss estimate {(acousticMetrics.responseLossRate * 100).toFixed(0)}% · repairs/restarts {acousticMetrics.retransmissions} · elapsed {acousticMetrics.elapsedSeconds.toFixed(1)} s{audioFragmentProgress.total > 0 && handshakeState !== 'ESTABLISHED' && ` · ${audioFragmentProgress.heard}/${audioFragmentProgress.total} ${audioFragmentProgress.messageType === 1 ? 'response' : 'confirmation'} fragments heard`}{handshakeState === 'ESTABLISHED' && ` · Encrypted · AES-256-GCM · ${sasManuallyVerifiedRef.current ? 'code manually confirmed' : 'peer identity unverified'}`}</p>}{transfer && <p>Transfer {transfer.id.toString(16).padStart(8, '0')} · {transfer.archiveBytes.toLocaleString()} ZIP bytes · block {currentBlock + 1} / {transfer.totalBlocks} · {ackCount} blocks acknowledged · 8 source + 2 repair symbols · optical frame sequence {frame} (repeats do not advance blocks){connectionMode === 'audio' && ` · Encrypted · AES-256-GCM · camera alignment ${alignmentConfirmed ? 'confirmed by sound' : 'awaiting sound'} · ${logicalFps} logical FPS`}</p>}
     <div ref={opticalStageRef} className="optical-stage">
-      {connectionMode === 'audio' && pairedId !== null && <div className="optical-stage-status">{handshakeState === 'AWAITING_USER_VERIFICATION' ? handsFreePairing ? `Continuing encrypted pairing in ${verificationSeconds}s · peer identity unverified` : 'Compare pairing codes on both devices' : handshakeState === 'ESTABLISHED' ? `Encrypted · AES-256-GCM · ${sasManuallyVerifiedRef.current ? 'code manually confirmed' : 'peer identity unverified'}` : handshakeState === 'DISPLAYING_OFFER' ? 'Optical offer: aim receiver camera here, then enable its speaker' : handshakeState === 'ASSEMBLING_AUDIO_RESPONSE' ? `Listening to receiver audio: ${audioFragmentProgress.heard}/${audioFragmentProgress.total} fragments heard` : handshakeState === 'WAITING_FOR_READY' ? `Waiting for receiver confirmation: ${audioFragmentProgress.messageType === 2 ? `${audioFragmentProgress.heard}/${audioFragmentProgress.total} fragments heard` : 'listening…'}` : `Secure handshake: ${handshakeState}`}</div>}
+      {connectionMode === 'audio' && pairedId !== null && <div className="optical-stage-status">{handshakeState === 'AWAITING_USER_VERIFICATION' ? handsFreePairing ? `Continuing encrypted pairing in ${verificationSeconds}s · peer identity unverified` : 'Compare pairing codes on both devices' : handshakeState === 'ESTABLISHED' ? `Encrypted · AES-256-GCM · ${sasManuallyVerifiedRef.current ? 'code manually confirmed' : 'peer identity unverified'}` : handshakeState === 'DISPLAYING_OFFER' ? 'Optical offer: aim receiver camera here, then enable its speaker' : handshakeState === 'ASSEMBLING_AUDIO_RESPONSE' ? `Listening to receiver audio: ${audioFragmentProgress.heard}/${audioFragmentProgress.total} fragments heard${nackPayload ? ' · requesting missing fragment(s) optically' : ''}` : handshakeState === 'WAITING_FOR_READY' ? `Waiting for receiver confirmation: ${audioFragmentProgress.messageType === 2 ? `${audioFragmentProgress.heard}/${audioFragmentProgress.total} fragments heard` : 'listening…'}` : `Secure handshake: ${handshakeState}`}</div>}
       {connectionMode === 'audio' && handshakeState === 'AWAITING_USER_VERIFICATION' && <div role="alert" className="optical-stage-verification"><strong>{sas}</strong><div><button onClick={() => acceptSas(true)}>Codes match</button> <button onClick={cancelHandshake}>Cancel</button></div></div>}
       <canvas ref={canvasRef} aria-label="Optical file transfer frame" style={{ display: completed ? 'none' : 'block', width: '100%', maxHeight: '75vh', objectFit: 'contain', imageRendering: 'pixelated', background: 'white' }} />
     </div>
