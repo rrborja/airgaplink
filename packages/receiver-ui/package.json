@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "test": "node --experimental-strip-types src/local-sink.test.ts && node --experimental-strip-types src/indexeddb-sink.test.ts",
+    "test": "node --experimental-strip-types src/local-sink.test.ts && node --experimental-strip-types src/indexeddb-sink.test.ts && node --experimental-strip-types src/camera-telemetry.test.ts",
     "preview": "vite preview",
     "lint": "eslint src --ext ts,tsx",
     "type-check": "tsc --noEmit"

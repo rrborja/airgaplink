@@ -20,7 +20,8 @@ export { HANDSHAKE_CAPABILITY_IDENTITY, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE
 export { fastReadyPackets, FastReadyAssembler } from './ready-control.ts'
 export type { HandshakeOffer, HandshakeResponse, HandshakeMaterial } from './handshake.ts'
 export { HANDSHAKE_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_FRAGMENTS, MAX_HANDSHAKE_MESSAGE_BYTES, fragmentHandshakeMessage, rotateHandshakePackets, parseHandshakeFragment, AcousticFragmentReassembler } from './acoustic-fragment.ts'
-export { AUDIO_PACE_FPS, opticalPaceFps, recommendOpticalPaceCode } from './pacing.ts'
+export { AUDIO_PACE_FPS, AdaptiveOpticalPace, opticalPaceFps, recommendOpticalPaceCode, type OpticalPaceWindow } from './pacing.ts'
+export { TemporalOpticalRecovery } from './temporal-recovery.ts'
 export { CALIBRATION_STAGE_MS, CALIBRATION_END_STAGE, calibrationRates, calibrationFrameId, readCalibrationFrameId, selectCalibratedPaceCode } from './calibration.ts'
 export type { CalibrationSample } from './calibration.ts'
 
@@ -79,6 +80,8 @@ const DATA_INSET = 16
 export const RGB_BOOTSTRAP_FRAME_TAG = 0xfe000000
 const RGB_BOOTSTRAP_COPIES = 5
 const RGB_DATA_COPIES = 3
+const BINARY_200_REPEATED_MAX_BYTES = 800
+const BINARY_200_COPIES = 3
 // A single display cell was not reliably separable through the physical
 // screen/camera pair. Keep the four pure colors, but give each data symbol a
 // 2x2 physical footprint so the camera can sample well inside its edges.
@@ -133,7 +136,7 @@ export interface DecodedOpticalFrame {
   header: OpticalFrameHeader;
   payload: Uint8Array;
   metadataAgreement: number;
-  recovery?: 'spatial-copy' | 'majority' | 'phase';
+  recovery?: 'spatial-copy' | 'majority' | 'phase' | 'temporal-majority';
 }
 
 export interface DecodeFailure {
@@ -141,6 +144,8 @@ export interface DecodeFailure {
   reason: 'finder' | 'metadata' | 'torn-frame' | 'payload-length' | 'payload-crc';
   metadataAgreement?: number;
   header?: OpticalFrameHeader;
+  /** Local-only bytes for bounded repeat-frame recovery; never trust without CRC. */
+  candidatePayload?: Uint8Array;
 }
 
 export type OpticalDecodeResult = DecodedOpticalFrame | DecodeFailure
@@ -253,7 +258,7 @@ function bitsToBytes(bits: Uint8Array, length: number) {
   return bytes
 }
 
-function rgbCopyStart(copy: number, symbolsPerCopy: number, totalSymbols: number, copies: number) {
+function spatialCopyStart(copy: number, symbolsPerCopy: number, totalSymbols: number, copies: number) {
   return Math.floor(copy * (totalSymbols - symbolsPerCopy) / (copies - 1))
 }
 
@@ -265,7 +270,9 @@ export function encodeOpticalFrame(payload: Uint8Array, frameId: number, blockId
   if (payload.length > framePayloadCapacity(profile)) throw new Error(`Payload exceeds ${framePayloadCapacity(profile)} byte frame capacity`)
   const bootstrap = rgbBootstrapFrame(profile, frameId)
   const rgbCopies = profile.colorMode === 'rgb' ? bootstrap ? RGB_BOOTSTRAP_COPIES : RGB_DATA_COPIES : 1
+  const binaryCopies = profile.id === BINARY_PROFILE.id && payload.length <= BINARY_200_REPEATED_MAX_BYTES ? BINARY_200_COPIES : 1
   if (profile.colorMode === 'rgb' && payload.length * 4 * rgbCopies > rgbSymbolCapacity(profile)) throw new Error('RGB payload exceeds spatial repetition capacity')
+  if (binaryCopies > 1 && payload.length * 8 * binaryCopies > profile.gridWidth * profile.gridHeight) throw new Error('Binary payload exceeds spatial repetition capacity')
   const { width, height } = frameDimensions(profile)
   const white = profile.bitsPerSymbol === 2 ? 3 : 1
   const cells = new Uint8Array(width * height).fill(white)
@@ -295,17 +302,27 @@ export function encodeOpticalFrame(payload: Uint8Array, frameId: number, blockId
     let noise = (index ^ fillerSeed ^ 0x85ebca6b) >>> 0
     noise ^= noise >>> 16; noise = Math.imul(noise, 0x7feb352d) >>> 0; noise ^= noise >>> 15
     const level = profile.colorMode === 'rgb' ? noise & 3
-      : profile.bitsPerSymbol === 1 ? payloadBits[bit] || 0 : ((payloadBits[bit] || 0) << 1) | (payloadBits[bit + 1] || 0)
+      : profile.bitsPerSymbol === 1 ? (payloadBits[bit] ?? (binaryCopies > 1 ? noise & 1 : 0)) : ((payloadBits[bit] || 0) << 1) | (payloadBits[bit + 1] || 0)
     if (profile.colorMode === 'rgb') setRgbSymbol(cells, width, profile, index, level)
     else setCell(cells, width, DATA_INSET + (index % profile.gridWidth), DATA_INSET + Math.floor(index / profile.gridWidth), level)
   }
   if (profile.colorMode === 'rgb') {
     const symbolsPerCopy = payload.length * 4, totalSymbols = rgbSymbolCapacity(profile)
     for (let copy = 0; copy < rgbCopies; copy += 1) {
-      const start = rgbCopyStart(copy, symbolsPerCopy, totalSymbols, rgbCopies)
+      const start = spatialCopyStart(copy, symbolsPerCopy, totalSymbols, rgbCopies)
       for (let symbol = 0; symbol < symbolsPerCopy; symbol += 1) {
         const bit = symbol * 2, level = (payloadBits[bit] << 1) | payloadBits[bit + 1]
         setRgbSymbol(cells, width, profile, start + symbol, level)
+      }
+    }
+  }
+  if (binaryCopies > 1) {
+    const totalSymbols = profile.gridWidth * profile.gridHeight
+    for (let copy = 1; copy < binaryCopies; copy += 1) {
+      const start = spatialCopyStart(copy, payloadBits.length, totalSymbols, binaryCopies)
+      for (let bit = 0; bit < payloadBits.length; bit += 1) {
+        const cell = start + bit
+        setCell(cells, width, DATA_INSET + cell % profile.gridWidth, DATA_INSET + Math.floor(cell / profile.gridWidth), payloadBits[bit])
       }
     }
   }
@@ -381,7 +398,9 @@ export function decodeOpticalCells(cells: Uint8Array, profile = DEBUG_PROFILE): 
   if (header.payloadLength > framePayloadCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
   const bootstrap = rgbBootstrapFrame(profile, header.frameId)
   const rgbCopies = profile.colorMode === 'rgb' ? bootstrap ? RGB_BOOTSTRAP_COPIES : RGB_DATA_COPIES : 1
+  const binaryCopies = profile.id === BINARY_PROFILE.id && header.payloadLength <= BINARY_200_REPEATED_MAX_BYTES ? BINARY_200_COPIES : 1
   if (profile.colorMode === 'rgb' && header.payloadLength * 4 * rgbCopies > rgbSymbolCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
+  if (binaryCopies > 1 && header.payloadLength * 8 * binaryCopies > profile.gridWidth * profile.gridHeight) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
   const readPayload = (startSymbol: number) => {
     const bits = new Uint8Array(header.payloadLength * 8)
     for (let index = 0; index < bits.length; index += 1) {
@@ -393,21 +412,23 @@ export function decodeOpticalCells(cells: Uint8Array, profile = DEBUG_PROFILE): 
   }
   let payload = readPayload(0)
   let recovery: DecodedOpticalFrame['recovery']
-  if (rgbCopies > 1 && crc32(payload) !== header.payloadCrc32) {
-    const symbolsPerCopy = header.payloadLength * 4, totalSymbols = rgbSymbolCapacity(profile)
-    const copies = Array.from({ length: rgbCopies }, (_, copy) => readPayload(rgbCopyStart(copy, symbolsPerCopy, totalSymbols, rgbCopies)))
+  const copiesCount = profile.colorMode === 'rgb' ? rgbCopies : binaryCopies
+  if (copiesCount > 1 && crc32(payload) !== header.payloadCrc32) {
+    const symbolsPerCopy = header.payloadLength * 8 / profile.bitsPerSymbol
+    const totalSymbols = profile.colorMode === 'rgb' ? rgbSymbolCapacity(profile) : profile.gridWidth * profile.gridHeight
+    const copies = Array.from({ length: copiesCount }, (_, copy) => readPayload(spatialCopyStart(copy, symbolsPerCopy, totalSymbols, copiesCount)))
     for (const candidate of copies) if (crc32(candidate) === header.payloadCrc32) { payload = candidate; recovery = 'spatial-copy'; break }
     if (crc32(payload) !== header.payloadCrc32) {
       payload = new Uint8Array(header.payloadLength)
       for (let index = 0; index < payload.length; index += 1) for (let bit = 0; bit < 8; bit += 1) {
         let votes = 0
         for (const candidate of copies) votes += (candidate[index] >>> bit) & 1
-        payload[index] |= (votes >= Math.ceil(rgbCopies / 2) ? 1 : 0) << bit
+        payload[index] |= (votes >= Math.ceil(copiesCount / 2) ? 1 : 0) << bit
       }
       recovery = 'majority'
     }
   }
-  if (crc32(payload) !== header.payloadCrc32) return { ok: false, reason: 'payload-crc', metadataAgreement: metadata.agreement, header }
+  if (crc32(payload) !== header.payloadCrc32) return { ok: false, reason: 'payload-crc', metadataAgreement: metadata.agreement, header, candidatePayload: payload }
   return { ok: true, header: metadata.header, payload, metadataAgreement: metadata.agreement, recovery }
 }
 

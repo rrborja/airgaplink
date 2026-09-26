@@ -1,4 +1,4 @@
-import { opticalPaceFps } from '../../optical-core/src/pacing.ts'
+import { AUDIO_PACE_FPS, opticalPaceFps } from '../../optical-core/src/pacing.ts'
 
 /** Audio feedback changes the display hold, never the optical frame clock. */
 export class AudioPaceController {
@@ -23,10 +23,12 @@ export class AudioPaceController {
     if (!direction) { this.direction = 0; this.consistentReports = 0; return false }
     this.consistentReports = direction === this.direction ? this.consistentReports + 1 : 1
     this.direction = direction
-    const requiredReports = direction < 0 ? 2 : 3
-    const minimumInterval = direction < 0 ? 4000 : 12000
+    const requiredReports = 2
+    const minimumInterval = direction < 0 ? 3000 : 5000
     if (this.consistentReports < requiredReports || now - this.lastChangeAt < minimumInterval) return false
-    this.currentFps = requestedFps
+    const currentIndex = AUDIO_PACE_FPS.findIndex(fps => fps >= this.currentFps)
+    const requestedIndex = AUDIO_PACE_FPS.indexOf(requestedFps as typeof AUDIO_PACE_FPS[number])
+    this.currentFps = AUDIO_PACE_FPS[Math.max(1, Math.min(AUDIO_PACE_FPS.length - 1, currentIndex + Math.sign(requestedIndex - currentIndex)))]
     this.lastChangeAt = now
     this.direction = 0; this.consistentReports = 0
     return true

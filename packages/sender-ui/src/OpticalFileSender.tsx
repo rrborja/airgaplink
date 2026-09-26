@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
 import reedSolomonWasmUrl from '@digitaldefiance/reed-solomon-erasure.wasm/wasm?url'
-import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockEncryptor, PROTOCOL_VERSION, ReedSolomonBlockCodec, SYMBOL_HEADER_BYTES, TRANSFER_MANIFEST_BYTES, calibrationFrameId, calibrationRates, decodeFskSamples, decodeOctalFskSamples, decodeQuadFskSamples, decodeHandshakeResponse, decodeReadyConfirm, deriveHandshakeMaterial, encodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, encodeOpticalFrame, framePayloadCapacity, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeOffer, opticalProfileNumber, packOpticalSymbol, packTransferManifest, parseHandshakeFragment, readBlockStatusPayload, readCompactStatusPayload, runtimeToneCount, verifyReadyConfirm, type AcousticToneCount, type HandshakeMaterial, type HandshakeOffer, type OpticalProfile } from '@qrcopy/optical-core'
+import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockEncryptor, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, calibrationFrameId, calibrationRates, decodeFskSamples, decodeOctalFskSamples, decodeQuadFskSamples, decodeHandshakeResponse, decodeReadyConfirm, deriveHandshakeMaterial, encodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, encodeOpticalFrame, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeOffer, opticalProfileNumber, packOpticalSymbol, packTransferManifest, parseHandshakeFragment, readBlockStatusPayload, readCompactStatusPayload, runtimeToneCount, verifyReadyConfirm, type AcousticToneCount, type HandshakeMaterial, type HandshakeOffer, type OpticalProfile } from '@qrcopy/optical-core'
 import { OPTICAL_OFFER_HOLD_MS, RGB_BOOTSTRAP_FRAME_TAG, nextOpticalOfferHold } from '@qrcopy/optical-core'
 import { FastReadyAssembler, FSK_SYMBOL_SECONDS, HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_FAST_READY, OCTAL_FAST_SYMBOL_SECONDS, equalBytes, fastReadyNegotiated, octalSymbolSeconds, readyConfirmFast } from '@qrcopy/optical-core'
 import { OpticalRenderer, scheduleOpticalFrames } from './OpticalRenderer'
@@ -10,6 +10,7 @@ import { createVirtualZipArchive, type ArchiveSource } from './virtual-zip'
 import { AudioBlockScheduler } from './audio-block-scheduler'
 import { applyCompactBlockStatus } from './compact-ack'
 import { AudioPaceController } from './audio-pace'
+import { opticalShardBytes } from './optical-shard-size'
 import { RotatingShardOrder } from './shard-order'
 
 const SOURCE_SHARDS = 8, REPAIR_SHARDS = 2
@@ -46,7 +47,9 @@ export function OpticalFileSender() {
   const [handshakeState, setHandshakeState] = useState<SenderHandshakeState>('IDLE'), [sas, setSas] = useState<string | null>(null)
   const [audioFragmentProgress, setAudioFragmentProgress] = useState({ messageType: 0, heard: 0, total: 0 })
   const [handsFreePairing, setHandsFreePairing] = useState(true), [verificationSeconds, setVerificationSeconds] = useState(3)
-  const [fastAudio, setFastAudio] = useState(true)
+  // The 12 ms mode lost most handshake packets on the observed laptop pair.
+  // Keep it available as an explicit experiment; default to the 16 ms mode.
+  const [fastAudio, setFastAudio] = useState(false)
   useEffect(() => { profileRef.current = profile; if (!transferRef.current) { const fps = profile.targetDisplayFps / profile.frameHoldCount; paceController.current = new AudioPaceController(fps); setLogicalFps(fps) } }, [profile])
   useEffect(() => { directoryInput.current?.setAttribute('webkitdirectory', ''); directoryInput.current?.setAttribute('directory', '') }, [])
   useEffect(() => { let cancelled = false; void ReedSolomonErasure.fromUrl(reedSolomonWasmUrl).then(engine => { if (!cancelled) { codec.current = new ReedSolomonBlockCodec(engine); setStatus('Offline ready. You can disconnect networking before selecting a directory.') } }).catch(() => setStatus('Could not load local erasure codec')); return () => { cancelled = true } }, [])
@@ -349,7 +352,7 @@ export function OpticalFileSender() {
       const archiveBytes = archive.size
       if (connectionMode === 'audio' && receiverStorageRef.current === 'memory' && archiveBytes > RECEIVER_MEMORY_LIMIT) throw new Error('Paired receiver reported memory-only storage over audio. Select Re-pair receiver after opening a normal receiver window.')
       const id = connectionMode === 'audio' ? pairedIdRef.current! : crypto.getRandomValues(new Uint32Array(1))[0]
-      const shardBytes = Math.floor((framePayloadCapacity(profile) - SYMBOL_HEADER_BYTES) / 32) * 32
+      const shardBytes = opticalShardBytes(profile)
       const blockBytes = shardBytes * SOURCE_SHARDS - 1 - (connectionMode === 'audio' ? 16 : 0)
       const totalBlocks = Math.ceil((TRANSFER_MANIFEST_BYTES + archiveBytes) / blockBytes)
       const manifest = packTransferManifest({ transferId: id, archiveBytes, blockBytes, totalBlocks, sha256: digest })

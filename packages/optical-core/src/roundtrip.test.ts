@@ -51,6 +51,20 @@ const binaryFrame = encodeOpticalFrame(binaryPayload, 108, 11, BINARY_PROFILE)
 const binaryCells = decodeOpticalCells(binaryFrame.cells, BINARY_PROFILE)
 const binaryImage = decodeOpticalImage(rasterizeOpticalCells(binaryFrame, 5), BINARY_PROFILE)
 if (!binaryCells.ok || !binaryImage.ok || binaryImage.header.frameId !== 108 || !isDeterministicPayload(binaryImage.payload, 108)) throw new Error('200×120 binary profile failed')
+const repeatedBinaryPayload = deterministicPayload(109, 784)
+const repeatedBinaryFrame = encodeOpticalFrame(repeatedBinaryPayload, 109, 11, BINARY_PROFILE)
+const repeatedCells = repeatedBinaryFrame.cells.slice()
+const copyStart = (copy: number) => Math.floor(copy * (BINARY_PROFILE.gridWidth * BINARY_PROFILE.gridHeight - repeatedBinaryPayload.length * 8) / 2)
+for (let copy = 0; copy < 3; copy += 1) {
+  const position = copyStart(copy) + copy
+  repeatedCells[(16 + Math.floor(position / BINARY_PROFILE.gridWidth)) * repeatedBinaryFrame.width + 16 + position % BINARY_PROFILE.gridWidth] ^= 1
+}
+const majorityBinary = decodeOpticalCells(repeatedCells, BINARY_PROFILE)
+if (!majorityBinary.ok || majorityBinary.recovery !== 'majority' || majorityBinary.payload.some((value, index) => value !== repeatedBinaryPayload[index])) throw new Error('200×120 binary spatial majority failed')
+const oneBadCopy = repeatedBinaryFrame.cells.slice()
+oneBadCopy[16 * repeatedBinaryFrame.width + 16] ^= 1
+const recoveredBinary = decodeOpticalCells(oneBadCopy, BINARY_PROFILE)
+if (!recoveredBinary.ok || recoveredBinary.recovery !== 'spatial-copy') throw new Error('200×120 binary copy recovery failed')
 const grayscaleSource = rasterizeOpticalCells(binaryFrame, 5)
 const grayscale = new Uint8Array(grayscaleSource.width * grayscaleSource.height)
 for (let index = 0; index < grayscale.length; index += 1) grayscale[index] = grayscaleSource.data![index * 4]

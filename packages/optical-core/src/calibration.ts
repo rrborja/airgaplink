@@ -18,17 +18,20 @@ export function readCalibrationFrameId(frameId: number) {
   return { stage: (frameId >>> 24) & 127, sequence: frameId & 0xffffff }
 }
 
-export interface CalibrationSample { firstSequence: number; lastSequence: number; uniqueFrames: number; spanMs: number }
+export interface CalibrationSample { firstSequence: number; lastSequence: number; uniqueFrames: number; distinctShards: number; spanMs: number }
 
 export function selectCalibratedPaceCode(profile: OpticalProfile, samples: ReadonlyMap<number, CalibrationSample>) {
   const rates = calibrationRates(profile)
-  for (let stage = rates.length - 1; stage >= 0; stage -= 1) {
+  let bestStage = -1, bestThroughput = 0
+  for (let stage = 0; stage < rates.length; stage += 1) {
     const sample = samples.get(stage)
-    if (!sample || sample.uniqueFrames < 3 || sample.spanMs < 1500) continue
-    const estimatedFrames = sample.lastSequence - sample.firstSequence + 1
-    if (estimatedFrames > 0 && sample.uniqueFrames / estimatedFrames >= 0.65) {
-      for (let code = AUDIO_PACE_FPS.length - 1; code > 0; code -= 1) if (AUDIO_PACE_FPS[code] <= rates[stage]) return code
-    }
+    if (!sample || sample.uniqueFrames < 3 || sample.distinctShards < 3 || sample.spanMs < 1000) continue
+    // A frame can have a new display ID but repeat an already-seen FEC shard.
+    // Reward absolute valid-frame delivery while requiring shard diversity.
+    const throughput = sample.uniqueFrames / (sample.spanMs / 1000) * Math.min(1, sample.distinctShards / 8)
+    if (throughput >= bestThroughput * 0.95) { bestThroughput = throughput; bestStage = stage }
   }
-  return 1 // one logical frame per second is the safe fallback
+  if (bestStage < 0) return 1
+  for (let code = AUDIO_PACE_FPS.length - 1; code > 0; code -= 1) if (AUDIO_PACE_FPS[code] <= rates[bestStage]) return code
+  return 1
 }

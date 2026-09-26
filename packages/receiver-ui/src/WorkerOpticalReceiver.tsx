@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
 import reedSolomonWasmUrl from '@digitaldefiance/reed-solomon-erasure.wasm/wasm?url'
-import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockCollector, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, aesGcmDecrypt, compactReadyNegotiated, decodeHandshakeOffer, decodeKeyConfirm, deriveHandshakeMaterial, encodeHandshakeResponse, encodeReadyConfirm, encodeReadyConfirmCompact, equalBytes, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeResponse, opticalBlockAad, opticalNonce, calibrationRates, encodeCompactFskPacket, encodeFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, frameDimensions, isDeterministicPayload, makeBlockStatusPayload, makeCompactStatusPayload, opticalPaceFps, opticalProfileNumber, readCalibrationFrameId, recommendOpticalPaceCode, responseToneCount, runtimeToneAllowed, selectCalibratedPaceCode, unpackOpticalSymbol, unpackTransferManifest, readyConfirm, readyConfirmCompact, writeOpticalCellRgba, type AcousticToneCount, type ControlPacket, type HandshakeMaterial, type HandshakeOffer, type OpticalImageDecode, type OpticalProfile, type TransferManifest } from '@qrcopy/optical-core'
+import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OPTICAL_PROFILES, OpticalBlockCollector, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, aesGcmDecrypt, compactReadyNegotiated, decodeHandshakeOffer, decodeKeyConfirm, deriveHandshakeMaterial, encodeHandshakeResponse, encodeReadyConfirm, encodeReadyConfirmCompact, equalBytes, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeResponse, opticalBlockAad, opticalNonce, calibrationRates, encodeCompactFskPacket, encodeFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, frameDimensions, isDeterministicPayload, makeBlockStatusPayload, makeCompactStatusPayload, opticalPaceFps, opticalProfileNumber, readCalibrationFrameId, responseToneCount, runtimeToneAllowed, selectCalibratedPaceCode, unpackOpticalSymbol, unpackTransferManifest, readyConfirm, readyConfirmCompact, writeOpticalCellRgba, type AcousticToneCount, type ControlPacket, type HandshakeMaterial, type HandshakeOffer, type OpticalImageDecode, type OpticalProfile, type TransferManifest } from '@qrcopy/optical-core'
 import { HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_FAST_READY, fastReadyNegotiated, fastReadyPackets, octalSymbolSeconds, readyConfirmFast, rotateHandshakePackets } from '@qrcopy/optical-core'
+import { AdaptiveOpticalPace } from '@qrcopy/optical-core'
 import { RGB_BOOTSTRAP_FRAME_TAG, makeOpticalQualityPayload } from '@qrcopy/optical-core'
+import { CameraFrameMeter, applyShortExposure, cameraSettingsSummary, restoreAutoExposure, type CameraSettingsSummary } from './camera-telemetry'
 import { LocalOpticalSink } from './local-sink'
 import { IndexedDbOpticalSink } from './indexeddb-sink'
 
@@ -16,18 +18,20 @@ type ReceiverHandshakeState = 'IDLE' | 'WAITING_FOR_OFFER' | 'OFFER_RECEIVED' | 
 
 export function WorkerOpticalReceiver() {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const cameraTrackRef = useRef<MediaStreamTrack | null>(null)
   const gridRef = useRef<HTMLCanvasElement>(null)
   const workerRef = useRef<Worker | null>(null)
   const wasmBytes = useRef<Uint8Array | null>(null), recoveryCodec = useRef<ReedSolomonBlockCodec | null>(null), fileState = useRef<FileReceiveState>(emptyFileState())
   const speaker = useRef<AudioContext | null>(null), speakerTimer = useRef<number | null>(null), completionStopTimer = useRef<number | null>(null), readyPlaybackTimer = useRef<number | null>(null), audioSequence = useRef(0), verified = useRef(false), readySent = useRef(false), alignmentSeen = useRef(false), opticalLost = useRef(false), lastOpticalAt = useRef(0), resumeRepeats = useRef(0), completeSignalsSent = useRef(0), nextAudioStart = useRef(0)
   const handshakeRef = useRef<{ state: ReceiverHandshakeState; offer?: HandshakeOffer; responseCapabilities?: number; privateKey?: Uint8Array; material?: HandshakeMaterial; responseMessage?: Uint8Array; readyMessage?: Uint8Array; fastReadyMac?: Uint8Array; audioMode?: AcousticToneCount; responseRounds: number; readyRounds: number; outgoing: ControlPacket[]; reassembler: AcousticFragmentReassembler }>({ state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() })
-  const fileDecodeStats = useRef({ symbols: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 })
+  const fileDecodeStats = useRef({ symbols: 0, usefulShards: 0, usefulShardBytes: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 })
   const qualityFeedbackRef = useRef<{ transferId: number; failures: number; nextAt: number } | null>(null)
   const fileStarted = useRef(0)
   const pacingCode = useRef(0)
+  const adaptivePace = useRef(new AdaptiveOpticalPace(DEBUG_PROFILE, 1))
   const calibrationMode = useRef<'idle' | 'probing' | 'selected' | 'transferring'>('idle')
   const selectedPaceCode = useRef(0)
-  const calibrationSamples = useRef(new Map<number, { firstSequence: number; lastSequence: number; seen: Set<number>; firstAt: number; lastAt: number }>())
+  const calibrationSamples = useRef(new Map<number, { firstSequence: number; lastSequence: number; seen: Set<number>; shards: Set<number>; firstAt: number; lastAt: number }>())
   useEffect(() => () => { void fileState.current.sink?.remove() }, [])
   const [profile, setProfile] = useState<OpticalProfile>(DEBUG_PROFILE)
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>('direct')
@@ -38,7 +42,11 @@ export function WorkerOpticalReceiver() {
   const [speakerStatus, setSpeakerStatus] = useState('Speaker feedback off'), [audioPacketsSent, setAudioPacketsSent] = useState(0)
   const [opticalLink, setOpticalLink] = useState<'searching' | 'aligned' | 'interrupted'>('searching')
   const [recommendedPace, setRecommendedPace] = useState(0)
+  const [paceDiagnostics, setPaceDiagnostics] = useState({ validFps: 0, uniqueFps: 0, invalidFps: 0, senderFps: 0, usefulKBps: 0, storedKBps: 0, cameraFps: 0 })
+  const [opticalRecovery, setOpticalRecovery] = useState({ recovered: 0, candidates: 0, headerFrame: -1, payloadBytes: 0 })
   const [cameraActive, setCameraActive] = useState(true)
+  const [cameraSettings, setCameraSettings] = useState<CameraSettingsSummary | null>(null)
+  const [cameraControlStatus, setCameraControlStatus] = useState('')
   const [diskStorage, setDiskStorage] = useState<StorageMode>('checking')
   const [handshakeState, setHandshakeState] = useState<ReceiverHandshakeState>('WAITING_FOR_OFFER'), [sas, setSas] = useState<string | null>(null), [responseRounds, setResponseRounds] = useState(0)
   const [handsFreePairing, setHandsFreePairing] = useState(true), [verificationSeconds, setVerificationSeconds] = useState(3)
@@ -200,7 +208,7 @@ export function WorkerOpticalReceiver() {
     }, 1000)
     return () => window.clearInterval(timer)
   }, [task, connectionMode, cameraActive, profile, audioSessionId])
-  const resetFile = () => { cancelHandshake(); handshakeRef.current = { state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() }; setHandshakeState('WAITING_FOR_OFFER'); setResponseRounds(0); sasManuallyVerifiedRef.current = false; stopSpeaker(); void fileState.current.sink?.remove(); fileState.current = emptyFileState(); fileDecodeStats.current = { symbols: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 }; verified.current = false; readySent.current = false; alignmentSeen.current = false; opticalLost.current = false; lastOpticalAt.current = 0; resumeRepeats.current = 0; pacingCode.current = 0; selectedPaceCode.current = 0; calibrationMode.current = 'idle'; calibrationSamples.current.clear(); setRecommendedPace(0); setOpticalLink('searching'); completeSignalsSent.current = 0; fileStarted.current = 0; const nextSessionId = crypto.getRandomValues(new Uint32Array(1))[0]; audioSessionIdRef.current = nextSessionId; setAudioSessionId(nextSessionId); setCameraActive(true); setFileProgress({ blocks: 0, totalBlocks: 0, receivedBytes: 0, totalBytes: 0, verifiedBytes: 0, elapsedSeconds: 0 }); if (downloadUrl) URL.revokeObjectURL(downloadUrl); setDownloadUrl(null); setFileStatus('Waiting for secure optical handshake offer') }
+  const resetFile = () => { cancelHandshake(); handshakeRef.current = { state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() }; setHandshakeState('WAITING_FOR_OFFER'); setResponseRounds(0); sasManuallyVerifiedRef.current = false; stopSpeaker(); void fileState.current.sink?.remove(); fileState.current = emptyFileState(); fileDecodeStats.current = { symbols: 0, usefulShards: 0, usefulShardBytes: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 }; verified.current = false; readySent.current = false; alignmentSeen.current = false; opticalLost.current = false; lastOpticalAt.current = 0; resumeRepeats.current = 0; pacingCode.current = 0; selectedPaceCode.current = 0; calibrationMode.current = 'idle'; calibrationSamples.current.clear(); setRecommendedPace(0); setOpticalLink('searching'); completeSignalsSent.current = 0; fileStarted.current = 0; const nextSessionId = crypto.getRandomValues(new Uint32Array(1))[0]; audioSessionIdRef.current = nextSessionId; setAudioSessionId(nextSessionId); setCameraActive(true); setFileProgress({ blocks: 0, totalBlocks: 0, receivedBytes: 0, totalBytes: 0, verifiedBytes: 0, elapsedSeconds: 0 }); if (downloadUrl) URL.revokeObjectURL(downloadUrl); setDownloadUrl(null); setFileStatus('Waiting for secure optical handshake offer') }
   const markStored = (state: FileReceiveState, blockId: number) => {
     if (fileState.current !== state || state.received.has(blockId)) return
     const manifest = state.manifest
@@ -338,17 +346,18 @@ export function WorkerOpticalReceiver() {
       const calibration = readCalibrationFrameId(result.header.frameId)
       if (opticalLost.current && !calibration && result.header.frameId === 0 && calibrationMode.current !== 'transferring') { calibrationMode.current = 'idle'; selectedPaceCode.current = 0; calibrationSamples.current.clear() }
       if (calibration?.stage === CALIBRATION_END_STAGE && calibrationMode.current !== 'selected' && calibrationMode.current !== 'transferring') {
-        const samples = new Map<number, { firstSequence: number; lastSequence: number; uniqueFrames: number; spanMs: number }>()
-        for (const [stage, item] of calibrationSamples.current) samples.set(stage, { firstSequence: item.firstSequence, lastSequence: item.lastSequence, uniqueFrames: item.seen.size, spanMs: item.lastAt - item.firstAt })
+        const samples = new Map<number, { firstSequence: number; lastSequence: number; uniqueFrames: number; distinctShards: number; spanMs: number }>()
+        for (const [stage, item] of calibrationSamples.current) samples.set(stage, { firstSequence: item.firstSequence, lastSequence: item.lastSequence, uniqueFrames: item.seen.size, distinctShards: item.shards.size, spanMs: item.lastAt - item.firstAt })
         const code = selectCalibratedPaceCode(profile, samples)
-        selectedPaceCode.current = code; pacingCode.current = code; setRecommendedPace(opticalPaceFps(code))
+        selectedPaceCode.current = code; pacingCode.current = code; adaptivePace.current = new AdaptiveOpticalPace(profile, code); setRecommendedPace(opticalPaceFps(code))
         calibrationMode.current = 'selected'
         setFileStatus(`Optical calibration complete: ${opticalPaceFps(code)} logical FPS. Sending selection over sound…`)
       } else if (calibration && calibration.stage < calibrationRates(profile).length && calibrationMode.current !== 'selected' && calibrationMode.current !== 'transferring') {
         calibrationMode.current = 'probing'
         const now = performance.now()
         let sample = calibrationSamples.current.get(calibration.stage)
-        if (!sample) { sample = { firstSequence: calibration.sequence, lastSequence: calibration.sequence, seen: new Set<number>(), firstAt: now, lastAt: now }; calibrationSamples.current.set(calibration.stage, sample) }
+        if (!sample) { sample = { firstSequence: calibration.sequence, lastSequence: calibration.sequence, seen: new Set<number>(), shards: new Set<number>(), firstAt: now, lastAt: now }; calibrationSamples.current.set(calibration.stage, sample) }
+        sample.shards.add(symbol.index)
         if (!sample.seen.has(calibration.sequence)) { sample.seen.add(calibration.sequence); sample.firstSequence = Math.min(sample.firstSequence, calibration.sequence); sample.lastSequence = Math.max(sample.lastSequence, calibration.sequence); sample.lastAt = now }
       } else if (!calibration && result.header.frameId > 0) calibrationMode.current = 'transferring'
       lastOpticalAt.current = performance.now()
@@ -367,7 +376,9 @@ export function WorkerOpticalReceiver() {
       if (state.collectors.size >= 64) state.collectors.delete(state.collectors.keys().next().value!)
       collector = new OpticalBlockCollector(recoveryCodec.current, symbol.transferId, symbol.blockId); state.collectors.set(symbol.blockId, collector)
     }
+    const previousShardCount = collector.count
     let block = collector.add(symbol)
+    if (collector.count > previousShardCount) { fileDecodeStats.current.usefulShards += 1; fileDecodeStats.current.usefulShardBytes += symbol.bytes.length }
     if (symbol.blockId === 0) fileDecodeStats.current.manifestShards = collector.count
     if (!block) return
     if (connectionMode === 'audio') {
@@ -413,13 +424,14 @@ export function WorkerOpticalReceiver() {
   useEffect(() => {
     const video = videoRef.current
     if (!video || !cameraActive) return
-    let cancelled = false, stream: MediaStream | undefined, animation = 0, busy = false, lastCapture = 0
+    let cancelled = false, stream: MediaStream | undefined, animation = 0, videoCallback: number | null = null, busy = false, lastCapture = 0
+    const cameraFrames = new CameraFrameMeter()
     const worker = new Worker(new URL('./optical-worker.ts', import.meta.url), { type: 'module' })
     workerRef.current = worker
-    const history: Array<{ at: number; bytes: number; valid: boolean }> = []
+    const history: Array<{ at: number; bytes: number; valid: boolean; frameId: number | null; shards: number; shardBytes: number; storedBytes: number }> = []
     const seen = new Set<number>()
-    let valid = 0, failed = 0, processed = 0, lastUi = 0
-    worker.onmessage = (event: MessageEvent<{ result: OpticalImageDecode; finderStage: string; decodeMs: number; acquireMs: number; drawMs: number; readMs: number; sampleMs: number; crcMs: number; pixelPath: string; gpuDiagnostic: string }>) => {
+    let valid = 0, failed = 0, processed = 0, lastUi = 0, adaptiveHistoryActive = false
+    worker.onmessage = (event: MessageEvent<{ result: OpticalImageDecode; finderStage: string; decodeMs: number; acquireMs: number; drawMs: number; readMs: number; sampleMs: number; crcMs: number; pixelPath: string; gpuDiagnostic: string; temporalRecoveries: number; temporalCandidates: number }>) => {
       busy = false
       const now = performance.now(), result = event.data.result
       processed += 1
@@ -429,19 +441,25 @@ export function WorkerOpticalReceiver() {
         if (qualityFeedbackRef.current.failures === 3) sendAcousticStatus()
       }
       if (task === 'file') void acceptFileFrame(result)
+      const transferring = task === 'file' && connectionMode === 'audio' && calibrationMode.current === 'transferring'
+      if (transferring !== adaptiveHistoryActive) { history.length = 0; adaptiveHistoryActive = transferring }
       if (result.ok) valid += 1; else failed += 1
       let uniqueBytes = 0
       if (result.ok && !seen.has(result.header.frameId)) { seen.add(result.header.frameId); uniqueBytes = result.payload.length }
-      history.push({ at: now, bytes: uniqueBytes, valid: result.ok })
+      history.push({ at: now, bytes: uniqueBytes, valid: result.ok, frameId: result.ok ? result.header.frameId : null, shards: fileDecodeStats.current.usefulShards, shardBytes: fileDecodeStats.current.usefulShardBytes, storedBytes: fileState.current.receivedBytes })
       while (history.length && now - history[0].at > 5000) history.shift()
-      if (task === 'file' && connectionMode === 'audio' && calibrationMode.current === 'transferring' && history.length >= 4 && now - history[0].at >= 1000) {
-        const span = (now - history[0].at) / 1000
-        const processedFps = (history.length - 1) / span
-        const validFps = history.filter(item => item.valid).length / span
-        // Ordinary block feedback can restore a pace proven during startup,
-        // but a faster pace needs a fresh optical probe. Repeated decodes of
-        // one held frame are not evidence that the camera can follow it.
-        const code = Math.min(recommendOpticalPaceCode(profile, processedFps, validFps), selectedPaceCode.current)
+      const span = history.length > 1 ? (now - history[0].at) / 1000 : 0
+      const validWindow = history.filter(item => item.valid).length
+      const uniqueWindow = new Set(history.filter(item => item.frameId !== null).map(item => item.frameId)).size
+      const invalidWindow = history.length - validWindow
+      const usefulShards = history[history.length - 1].shards - history[0].shards
+      const usefulShardBytes = history[history.length - 1].shardBytes - history[0].shardBytes
+      const storedBytes = history[history.length - 1].storedBytes - history[0].storedBytes
+      const advancing = history.filter(item => item.frameId !== null && item.frameId > 0)
+      const senderSpan = advancing.length > 1 ? (advancing[advancing.length - 1].at - advancing[0].at) / 1000 : 0
+      const observedSenderFps = senderSpan > 0 ? Math.min(profile.targetDisplayFps, Math.max(0, (advancing[advancing.length - 1].frameId! - advancing[0].frameId!) / senderSpan)) : 0
+      if (transferring && history.length >= 3 && span >= 2) {
+        const code = adaptivePace.current.update({ processedFrames: history.length, validFrames: validWindow, uniqueFrames: uniqueWindow, usefulShards, usefulShardBytes, storedBytes, observedSenderFps, spanSeconds: span }, now)
         if (code !== pacingCode.current) { pacingCode.current = code; setRecommendedPace(opticalPaceFps(code)) }
       }
       if (result.sampledCells && gridRef.current) {
@@ -452,30 +470,50 @@ export function WorkerOpticalReceiver() {
       }
       if (now - lastUi > 250) {
         lastUi = now
+        setOpticalRecovery({ recovered: event.data.temporalRecoveries || 0, candidates: event.data.temporalCandidates || 0, headerFrame: result.header?.frameId ?? -1, payloadBytes: result.header?.payloadLength ?? 0 })
+        setPaceDiagnostics(previous => ({ ...previous, validFps: span > 0 ? validWindow / span : 0, uniqueFps: span > 0 ? uniqueWindow / span : 0, invalidFps: span > 0 ? invalidWindow / span : 0, senderFps: observedSenderFps, usefulKBps: span > 0 ? usefulShardBytes / span / 1024 : 0, storedKBps: span > 0 ? storedBytes / span / 1024 : 0, cameraFps: cameraFrames.fps }))
         const boundary = result.boundary
         const dimensions = frameDimensions(profile)
         const pixelsPerCell = boundary ? Math.min(Math.hypot(boundary.topRight.x - boundary.topLeft.x, boundary.topRight.y - boundary.topLeft.y) / dimensions.width, Math.hypot(boundary.bottomLeft.x - boundary.topLeft.x, boundary.bottomLeft.y - boundary.topLeft.y) / dimensions.height) : 0
-        setStatus({ camera: `${video.videoWidth} × ${video.videoHeight}`, finder: event.data.finderStage, reason: result.ok ? 'CRC-valid optical frame' : result.reason, recovery: result.ok ? result.recovery || 'none' : 'none', frame: result.ok ? result.header.frameId : -1, valid, failed, unique: seen.size, processingFps: history.length / 5, validFps: history.filter(item => item.valid).length / 5, usefulKBps: history.reduce((sum, item) => sum + item.bytes, 0) / 5120, decodeMs: event.data.decodeMs, acquireMs: event.data.acquireMs, drawMs: event.data.drawMs, readMs: event.data.readMs, sampleMs: event.data.sampleMs, crcMs: event.data.crcMs, pixelPath: event.data.pixelPath, gpuDiagnostic: event.data.gpuDiagnostic, pixelsPerCell, confidence: result.symbolConfidence || 0, deterministic: result.ok && isDeterministicPayload(result.payload, result.header.frameId), boundary: boundary ? `${Math.round(boundary.topLeft.x)},${Math.round(boundary.topLeft.y)} → ${Math.round(boundary.bottomRight.x)},${Math.round(boundary.bottomRight.y)}` : 'searching', fileSymbols: fileDecodeStats.current.symbols, invalidSymbols: fileDecodeStats.current.invalidSymbols, sessionRejects: fileDecodeStats.current.sessionRejects, manifestShards: fileDecodeStats.current.manifestShards, lastFileBlock: fileDecodeStats.current.lastBlock })
+        setStatus({ camera: `${video.videoWidth} × ${video.videoHeight}`, finder: event.data.finderStage, reason: result.ok ? 'CRC-valid optical frame' : result.reason, recovery: result.ok ? result.recovery || 'none' : 'none', frame: result.ok ? result.header.frameId : -1, valid, failed, unique: seen.size, processingFps: span > 0 ? (history.length - 1) / span : 0, validFps: span > 0 ? validWindow / span : 0, usefulKBps: history.reduce((sum, item) => sum + item.bytes, 0) / 5120, decodeMs: event.data.decodeMs, acquireMs: event.data.acquireMs, drawMs: event.data.drawMs, readMs: event.data.readMs, sampleMs: event.data.sampleMs, crcMs: event.data.crcMs, pixelPath: event.data.pixelPath, gpuDiagnostic: event.data.gpuDiagnostic, pixelsPerCell, confidence: result.symbolConfidence || 0, deterministic: result.ok && isDeterministicPayload(result.payload, result.header.frameId), boundary: boundary ? `${Math.round(boundary.topLeft.x)},${Math.round(boundary.topLeft.y)} → ${Math.round(boundary.bottomRight.x)},${Math.round(boundary.bottomRight.y)}` : 'searching', fileSymbols: fileDecodeStats.current.symbols, invalidSymbols: fileDecodeStats.current.invalidSymbols, sessionRejects: fileDecodeStats.current.sessionRejects, manifestShards: fileDecodeStats.current.manifestShards, lastFileBlock: fileDecodeStats.current.lastBlock })
       }
     }
     void (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } } })
+        try { stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { min: 30, ideal: 60 } } }) }
+        catch (error) {
+          if ((error as { name?: string }).name !== 'OverconstrainedError') throw error
+          stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } } })
+        }
         if (cancelled) { stream.getTracks().forEach(track => track.stop()); return }
         video.srcObject = stream; await video.play()
         if (cancelled) { stream.getTracks().forEach(track => track.stop()); video.srcObject = null; return }
+        cameraTrackRef.current = stream.getVideoTracks()[0] || null
+        if (cameraTrackRef.current) setCameraSettings(cameraSettingsSummary(cameraTrackRef.current))
         const capture = (now: number) => {
-          if (cancelled) return
-          if (!busy && video.videoWidth && now - lastCapture >= 1000 / profile.expectedCameraFps) {
-            busy = true; lastCapture = now
-            void createImageBitmap(video).then(bitmap => { if (cancelled) { bitmap.close(); return } worker.postMessage({ bitmap, profileId: profile.id, sentAt: now }, [bitmap]) }).catch(() => { busy = false; setStatus(previous => ({ ...previous, reason: 'Camera frame capture failed' })) })
-          }
-          animation = requestAnimationFrame(capture)
+          if (cancelled || busy || !video.videoWidth || now - lastCapture < 1000 / profile.expectedCameraFps) return
+          busy = true; lastCapture = now
+          void createImageBitmap(video).then(bitmap => { if (cancelled) { bitmap.close(); return } worker.postMessage({ bitmap, profileId: profile.id, sentAt: now }, [bitmap]) }).catch(() => { busy = false; setStatus(previous => ({ ...previous, reason: 'Camera frame capture failed' })) })
         }
-        animation = requestAnimationFrame(capture)
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          const observe = (now: number, metadata: VideoFrameCallbackMetadata) => {
+            if (cancelled) return
+            cameraFrames.add(now, metadata.presentedFrames)
+            capture(now)
+            videoCallback = video.requestVideoFrameCallback(observe)
+          }
+          videoCallback = video.requestVideoFrameCallback(observe)
+        } else {
+          const captureFallback = (now: number) => {
+            if (cancelled) return
+            capture(now)
+            animation = requestAnimationFrame(captureFallback)
+          }
+          animation = requestAnimationFrame(captureFallback)
+        }
       } catch { setStatus(previous => ({ ...previous, reason: 'Camera permission or worker unavailable' })) }
     })()
-    return () => { cancelled = true; cancelAnimationFrame(animation); stream?.getTracks().forEach(track => track.stop()); video.pause(); video.srcObject = null; worker.terminate(); workerRef.current = null }
+    return () => { cancelled = true; cancelAnimationFrame(animation); if (videoCallback !== null) video.cancelVideoFrameCallback(videoCallback); cameraTrackRef.current = null; stream?.getTracks().forEach(track => track.stop()); video.pause(); video.srcObject = null; worker.terminate(); workerRef.current = null }
   }, [profile, task, connectionMode, audioSessionId, cameraActive])
   useEffect(() => {
     if (cameraActive) return
@@ -483,9 +521,18 @@ export function WorkerOpticalReceiver() {
     grid?.getContext('2d')?.clearRect(0, 0, grid.width, grid.height)
   }, [cameraActive])
   const exportMetrics = () => {
-    const content = JSON.stringify({ kind: 'physical-optical-diagnostics', timestamp: new Date().toISOString(), profile: profile.id, task, ...status, fileProgress, speakerStatus }, null, 2)
+    const content = JSON.stringify({ kind: 'physical-optical-diagnostics', timestamp: new Date().toISOString(), profile: profile.id, task, ...status, paceDiagnostics, opticalRecovery, cameraSettings, cameraControlStatus, recommendedPace, fileProgress, speakerStatus }, null, 2)
     const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }))
     const link = document.createElement('a'); link.href = url; link.download = 'optical-diagnostics.json'; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  const changeExposure = async (short: boolean) => {
+    const track = cameraTrackRef.current
+    if (!track) return
+    try {
+      const applied = short ? await applyShortExposure(track) : await restoreAutoExposure(track)
+      setCameraSettings(cameraSettingsSummary(track))
+      setCameraControlStatus(applied ? short ? 'Short exposure enabled; check CRC and brightness' : 'Automatic exposure restored' : 'Camera did not confirm the requested exposure mode')
+    } catch (error) { setCameraControlStatus(`Camera exposure control failed: ${error instanceof Error ? error.message : String(error)}`) }
   }
   return <main style={{ maxWidth: 1180, margin: '28px auto', padding: 20, fontFamily: 'system-ui, sans-serif' }}>
     <h1>High-Speed Optical</h1>
@@ -502,6 +549,9 @@ export function WorkerOpticalReceiver() {
     {task === 'file' && fileProgress.totalBytes === 0 && <p>0 ZIP bytes received · {status.sessionRejects > 0 ? 'optical frames belong to a different audio session; re-pair the sender' : status.manifestShards > 0 ? `waiting for transfer manifest (${status.manifestShards} of 8 distinct symbols)` : 'waiting for transfer manifest'}</p>}
     {task === 'file' && fileProgress.totalBytes > 0 && <div style={{ margin: '16px 0' }}><p><strong>{fileProgress.receivedBytes.toLocaleString()} / {fileProgress.totalBytes.toLocaleString()} ZIP bytes received ({(100 * fileProgress.receivedBytes / fileProgress.totalBytes).toFixed(1)}%)</strong></p><progress aria-label="ZIP bytes received" value={fileProgress.receivedBytes} max={fileProgress.totalBytes} style={{ width: '100%', height: 20 }} /><p>Blocks {fileProgress.blocks} / {fileProgress.totalBlocks} · average {(fileProgress.receivedBytes / Math.max(0.001, fileProgress.elapsedSeconds) / 1e6).toFixed(3)} MB/s · {fileProgress.verifiedBytes ? 'SHA-256 verified' : fileProgress.blocks < fileProgress.totalBlocks ? 'receiving missing blocks; SHA-256 starts when all are stored' : 'all blocks stored; checking local SHA-256'}</p></div>}
     {profile.colorMode === 'rgb' && status.recovery !== 'none' && <p>RGB optical correction used: {status.recovery}</p>}
+    {cameraSettings && <p>Camera configured {cameraSettings.width}×{cameraSettings.height} at {cameraSettings.configuredFps || 'unknown'} FPS · exposure {cameraSettings.exposureMode}{cameraSettings.exposureTime !== null ? ` (${cameraSettings.exposureTime} × 100 µs)` : ''} · focus {cameraSettings.focusMode}. {cameraSettings.canShortenExposure && cameraSettings.exposureMode !== 'manual' && <button onClick={() => void changeExposure(true)}>Try short exposure (experimental)</button>}{cameraSettings.exposureMode === 'manual' && cameraSettings.canRestoreAuto && <button onClick={() => void changeExposure(false)}>Restore automatic exposure</button>} {cameraControlStatus}</p>}
+    {task === 'file' && <p>Optical payload: {opticalRecovery.payloadBytes || 'unknown'} bytes · last readable header frame {opticalRecovery.headerFrame < 0 ? '—' : opticalRecovery.headerFrame} · repeat candidates {opticalRecovery.candidates} · CRC-verified temporal recoveries {opticalRecovery.recovered}</p>}
+    {task === 'file' && connectionMode === 'audio' && calibrationMode.current === 'transferring' && <p>Recent optical delivery: camera {paceDiagnostics.cameraFps ? paceDiagnostics.cameraFps.toFixed(1) : 'unavailable'} / processed {status.processingFps.toFixed(1)} / valid {paceDiagnostics.validFps.toFixed(1)} FPS · new FEC {paceDiagnostics.usefulKBps.toFixed(1)} KB/s · stored ZIP {paceDiagnostics.storedKBps.toFixed(1)} KB/s · sender observed {paceDiagnostics.senderFps.toFixed(1)} FPS · {paceDiagnostics.invalidFps.toFixed(1)} invalid FPS · requesting {recommendedPace} FPS over sound</p>}
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 20, marginTop: 16 }}>
       <video ref={videoRef} muted playsInline style={{ width: '100%', background: '#111' }} />
       <aside><h2>Diagnostics</h2><p>{status.reason}</p>{profile.bitsPerSymbol === 2 && status.pixelsPerCell > 0 && status.pixelsPerCell < 4 && <p role="alert">Four-level grid is too small in the camera image. Move closer or use the same binary profile on both devices.</p>}<dl><dt>Camera</dt><dd>{status.camera}</dd><dt>Finder</dt><dd>{status.finder}</dd><dt>Detected boundary</dt><dd>{status.boundary}</dd><dt>Camera pixels / cell</dt><dd>{status.pixelsPerCell ? `${status.pixelsPerCell.toFixed(1)}${status.pixelsPerCell < 6 ? ' · move camera closer' : ''}` : '—'}</dd><dt>Frame</dt><dd>{status.frame < 0 ? '—' : status.frame}</dd><dt>Processed / valid FPS</dt><dd>{status.processingFps.toFixed(1)} / {status.validFps.toFixed(1)}</dd><dt>Decode time</dt><dd>{status.decodeMs.toFixed(1)} ms</dd><dt>Pixel path</dt><dd>{status.pixelPath}</dd><dt>GPU candidate</dt><dd>{status.gpuDiagnostic}</dd><dt>Stages</dt><dd>find {status.acquireMs.toFixed(0)} · draw {status.drawMs.toFixed(0)} · read {status.readMs.toFixed(0)} · sample {status.sampleMs.toFixed(0)} · CRC {status.crcMs.toFixed(0)} ms</dd><dt>Unique optical bytes</dt><dd>{status.usefulKBps.toFixed(1)} KB/s</dd><dt>Valid / failed</dt><dd>{status.valid} / {status.failed}</dd><dt>Unique frames</dt><dd>{status.unique}</dd>{task === 'file' && <><dt>File symbols decoded</dt><dd>{status.fileSymbols}</dd><dt>Wrong audio session</dt><dd>{status.sessionRejects}</dd><dt>Invalid file symbols</dt><dd>{status.invalidSymbols}</dd><dt>Manifest shards</dt><dd>{status.manifestShards} / 8</dd><dt>Last file block</dt><dd>{status.lastFileBlock < 0 ? '—' : status.lastFileBlock}</dd></>}<dt>Symbol confidence</dt><dd>{(status.confidence * 100).toFixed(0)}%</dd>{task === 'benchmark' && <><dt>Benchmark payload</dt><dd>{status.deterministic ? 'verified' : '—'}</dd></>}</dl><canvas ref={gridRef} aria-label="Sampled optical grid" style={{ width: '100%', imageRendering: 'pixelated', border: '1px solid #777' }} /></aside>

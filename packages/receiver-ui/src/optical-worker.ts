@@ -1,4 +1,4 @@
-import { DEBUG_PROFILE, OPTICAL_PROFILES, RGB_BOOTSTRAP_FRAME_TAG, decodeOpticalCells, detectOpticalBoundary, frameDimensions, sampleOpticalCells, type FinderReport, type OpticalBoundary, type OpticalImage, type OpticalImageDecode, type Point } from '@qrcopy/optical-core'
+import { DEBUG_PROFILE, OPTICAL_PROFILES, RGB_BOOTSTRAP_FRAME_TAG, TemporalOpticalRecovery, crc32, decodeOpticalCells, detectOpticalBoundary, frameDimensions, sampleOpticalCells, type FinderReport, type OpticalBoundary, type OpticalImage, type OpticalImageDecode, type Point } from '@qrcopy/optical-core'
 import { GpuOpticalSampler } from './gpu-optical-sampler'
 
 // File pixels stay inside this worker and are never supplied to a network API.
@@ -15,6 +15,7 @@ let grayBuffer = new Uint8Array(0)
 let gpuSampler: GpuOpticalSampler | null = null
 let gpuUnavailable = false, gpuVerified = false, gpuAttempts = 0
 let gpuDiagnostic = 'not tested'
+const temporalRecovery = new TemporalOpticalRecovery(crc32)
 
 function translate(point: Point, x: number, y: number): Point { return { x: point.x - x, y: point.y - y } }
 function localBoundary(value: OpticalBoundary, x: number, y: number, scale: number): OpticalBoundary {
@@ -23,7 +24,7 @@ function localBoundary(value: OpticalBoundary, x: number, y: number, scale: numb
 }
 
 async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; reset?: boolean; sentAt?: number }) {
-  if (data.reset) { boundary = undefined; failureStreak = 0; lastAcquisition = 0; return }
+  if (data.reset) { boundary = undefined; failureStreak = 0; lastAcquisition = 0; temporalRecovery.clear(); return }
   const bitmap = data.bitmap
   if (!bitmap) return
   const profile = OPTICAL_PROFILES.find(item => item.id === data.profileId) || DEBUG_PROFILE
@@ -162,18 +163,31 @@ async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; res
       }
     }
   }
+  if (!result.ok && result.reason === 'payload-crc') {
+    const recovered = temporalRecovery.add(result, performance.now())
+    if (recovered) result = { ...recovered, boundary, sampledCells: result.sampledCells, symbolConfidence: result.symbolConfidence }
+  }
   bitmap.close()
   if (result.ok) failureStreak = 0
   else {
     failureStreak += 1
-    if (usedGpu && failureStreak >= 10) gpuVerified = false
+    const trustedGeometry = result.reason === 'payload-crc' && !!result.header && (result.symbolConfidence || 0) >= 0.5
+    if (usedGpu && failureStreak >= 10 && !trustedGeometry) gpuVerified = false
     // A stale quadrilateral can keep sampling the wrong cells even though the
-    // frame remains visible. Re-find it promptly without requiring movement.
-    if (failureStreak >= 8) { boundary = undefined; failureStreak = 0; lastAcquisition = 0 }
+    // frame remains visible. Valid metadata and strong contrast instead get
+    // time to accumulate repeated payloads before a more costly re-find.
+    if (failureStreak >= (trustedGeometry ? 90 : 8)) { boundary = undefined; failureStreak = 0; lastAcquisition = 0 }
   }
   // The sampled grid is only needed for a UI snapshot; don't copy it every frame.
   const diagnosticsGrid = result.sampledCells && ++decodedCount % 25 === 0 ? result.sampledCells : undefined
-  self.postMessage({ result: { ...result, sampledCells: diagnosticsGrid }, finderStage, decodeMs: performance.now() - started, acquireMs, drawMs, readMs, sampleMs, crcMs, pixelPath: usedGpu ? 'GPU symbol grid' : profile.colorMode !== 'rgb' && grayAvailable ? 'Y plane' : 'Canvas RGBA', gpuDiagnostic, sentAt: data.sentAt })
+  self.postMessage({ result: { ...result, candidatePayload: undefined, sampledCells: diagnosticsGrid }, finderStage, decodeMs: performance.now() - started, acquireMs, drawMs, readMs, sampleMs, crcMs, pixelPath: usedGpu ? 'GPU symbol grid' : profile.colorMode !== 'rgb' && grayAvailable ? 'Y plane' : 'Canvas RGBA', gpuDiagnostic, temporalRecoveries: temporalRecovery.recovered, temporalCandidates: temporalRecovery.lastCandidateCount, sentAt: data.sentAt })
 }
 
-self.onmessage = (event: MessageEvent<{ bitmap?: ImageBitmap; profileId: string; reset?: boolean; sentAt?: number }>) => { void processFrame(event.data) }
+self.onmessage = (event: MessageEvent<{ bitmap?: ImageBitmap; profileId: string; reset?: boolean; sentAt?: number }>) => {
+  void processFrame(event.data).catch(error => {
+    try { event.data.bitmap?.close() } catch { /* The frame may already be closed. */ }
+    // Always release the main thread's busy gate so one failed decode cannot
+    // permanently stop camera capture and optical progress.
+    self.postMessage({ result: { ok: false, reason: 'finder' }, finderStage: 'worker-error', decodeMs: 0, acquireMs: 0, drawMs: 0, readMs: 0, sampleMs: 0, crcMs: 0, pixelPath: 'unavailable', gpuDiagnostic: error instanceof Error ? error.message : 'Worker decode failed', sentAt: event.data.sentAt })
+  })
+}
