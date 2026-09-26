@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
-import { BINARY_PROFILE, DEBUG_PROFILE, RGB4_200_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, decodeOpticalCells, deterministicPayload, encodeOpticalFrame, framePayloadCapacity } from './index.ts'
+import { BINARY_PROFILE, DEBUG_PROFILE, DENSE_BINARY_PROFILE, RGB4_200_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, decodeOpticalCells, deterministicPayload, encodeOpticalFrame, framePayloadCapacity } from './index.ts'
 import { OpticalBlockCollector, ReedSolomonBlockCodec, SYMBOL_HEADER_BYTES, TRANSFER_MANIFEST_BYTES, packOpticalSymbol, packTransferManifest, unpackOpticalSymbol, unpackTransferManifest } from './fec.ts'
 
 const engine = ReedSolomonErasure.fromBytes(readFileSync(new URL(import.meta.resolve('@digitaldefiance/reed-solomon-erasure.wasm/wasm'))))
@@ -43,7 +43,7 @@ for (let blockId = 0; blockId < totalBlocks; blockId += 1) {
 if (cursor !== archive.length || !createHash('sha256').update(result).digest().equals(hash)) throw new Error('Final optical archive hash mismatch')
 // Both binary profiles fill their data grids with three spatial copies. Verify
 // their non-32-aligned FEC shard sizes through framing and erasure recovery.
-for (const binaryProfile of [BINARY_PROFILE, WIDE_BINARY_PROFILE]) {
+for (const binaryProfile of [BINARY_PROFILE, WIDE_BINARY_PROFILE, DENSE_BINARY_PROFILE]) {
   const packetBytes = binaryRepeatedPayloadCapacity(binaryProfile), binaryShardBytes = packetBytes - SYMBOL_HEADER_BYTES
   const binarySource = deterministicPayload(0x5511, 8 * binaryShardBytes - 1)
   const binaryBlock = codec.encode(binarySource, binaryShardBytes)

@@ -1,4 +1,4 @@
-import { BINARY_200_REPEATED_MAX_BYTES, BINARY_PROFILE, DEBUG_PROFILE, GRAY4_PROFILE, RGB4_200_PROFILE, RGB4_PROFILE, RGB_BOOTSTRAP_FRAME_TAG, TARGET_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, calibrationFrameId, decodeOpticalCells, decodeOpticalImage, deterministicPayload, encodeOpticalFrame, framePayloadCapacity, isDeterministicPayload, opticalProfileNumber, rasterizeOpticalCells, sampleOpticalCells } from './index.ts'
+import { BINARY_200_REPEATED_MAX_BYTES, BINARY_PROFILE, DEBUG_PROFILE, DENSE_BINARY_PROFILE, GRAY4_PROFILE, RGB4_200_PROFILE, RGB4_PROFILE, RGB_BOOTSTRAP_FRAME_TAG, TARGET_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, calibrationFrameId, decodeOpticalCells, decodeOpticalImage, deterministicPayload, encodeOpticalFrame, framePayloadCapacity, isDeterministicPayload, opticalProfileNumber, rasterizeOpticalCells, sampleOpticalCells } from './index.ts'
 
 const payload = deterministicPayload(42, framePayloadCapacity(DEBUG_PROFILE))
 const encoded = encodeOpticalFrame(payload, 42, 7)
@@ -87,6 +87,23 @@ for (let copy = 0; copy < 3; copy += 1) {
 const wideRecovered = decodeOpticalCells(wideCells, WIDE_BINARY_PROFILE)
 if (!wideRecovered.ok || wideRecovered.recovery !== 'majority' || wideRecovered.payload.some((value, index) => value !== widePayload[index])) throw new Error('Wide binary majority recovery failed')
 if (widePayload.length * 8 * 3 !== WIDE_BINARY_PROFILE.gridWidth * WIDE_BINARY_PROFILE.gridHeight) throw new Error('Wide triplicated payload leaves filler bands')
+if (opticalProfileNumber(DENSE_BINARY_PROFILE) !== opticalProfileNumber(WIDE_BINARY_PROFILE) + 1) throw new Error('New profile must be appended without renumbering existing profiles')
+const denseCapacity = binaryRepeatedPayloadCapacity(DENSE_BINARY_PROFILE)
+if (denseCapacity !== 2 * binaryRepeatedPayloadCapacity(WIDE_BINARY_PROFILE)) throw new Error('Dense binary profile does not double the triplicated widescreen payload')
+const densePayload = deterministicPayload(112, denseCapacity)
+const denseFrame = encodeOpticalFrame(densePayload, 112, 12, DENSE_BINARY_PROFILE)
+for (const pixelsPerCell of [3, 4]) {
+  const denseImage = decodeOpticalImage(rasterizeOpticalCells(denseFrame, pixelsPerCell), DENSE_BINARY_PROFILE)
+  if (!denseImage.ok || denseImage.payload.some((value, index) => value !== densePayload[index])) throw new Error(`Dense binary camera round trip failed at ${pixelsPerCell} pixels/cell`)
+}
+const denseCells = denseFrame.cells.slice()
+for (let copy = 0; copy < 3; copy += 1) {
+  const position = copy * densePayload.length * 8 + copy
+  denseCells[(16 + Math.floor(position / DENSE_BINARY_PROFILE.gridWidth)) * denseFrame.width + 16 + position % DENSE_BINARY_PROFILE.gridWidth] ^= 1
+}
+const denseRecovered = decodeOpticalCells(denseCells, DENSE_BINARY_PROFILE)
+if (!denseRecovered.ok || denseRecovered.recovery !== 'majority' || denseRecovered.payload.some((value, index) => value !== densePayload[index])) throw new Error('Dense binary spatial majority failed')
+if (densePayload.length * 8 * 3 !== DENSE_BINARY_PROFILE.gridWidth * DENSE_BINARY_PROFILE.gridHeight) throw new Error('Dense triplicated payload leaves filler bands')
 const grayscaleSource = rasterizeOpticalCells(binaryFrame, 5)
 const grayscale = new Uint8Array(grayscaleSource.width * grayscaleSource.height)
 for (let index = 0; index < grayscale.length; index += 1) grayscale[index] = grayscaleSource.data![index * 4]

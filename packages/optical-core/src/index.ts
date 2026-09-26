@@ -29,7 +29,7 @@ export { CALIBRATION_STAGE_MS, CALIBRATION_END_STAGE, calibrationRates, calibrat
 export type { CalibrationSample } from './calibration.ts'
 
 export interface OpticalProfile {
-  id: 'debug-100x60' | 'binary-200x120' | 'binary-240x120' | 'gray4-300x180' | 'gray4-400x240' | 'rgb4-300x180' | 'rgb4-200x120';
+  id: 'debug-100x60' | 'binary-200x120' | 'binary-240x120' | 'binary-320x180' | 'gray4-300x180' | 'gray4-400x240' | 'rgb4-300x180' | 'rgb4-200x120';
   gridWidth: number;
   gridHeight: number;
   bitsPerSymbol: 1 | 2;
@@ -74,13 +74,26 @@ export const WIDE_BINARY_PROFILE: OpticalProfile = {
   fecRatio: 0,
 }
 
+/** Opt-in smaller black/white cells: twice the 240×120 data grid, retaining
+ * three full spatial copies and the existing eight-source/two-repair FEC. */
+export const DENSE_BINARY_PROFILE: OpticalProfile = {
+  id: 'binary-320x180',
+  gridWidth: 320,
+  gridHeight: 180,
+  bitsPerSymbol: 1,
+  frameHoldCount: 2,
+  targetDisplayFps: 60,
+  expectedCameraFps: 60,
+  fecRatio: 0,
+}
+
 export const GRAY4_PROFILE: OpticalProfile = { id: 'gray4-300x180', gridWidth: 300, gridHeight: 180, bitsPerSymbol: 2, frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 export const TARGET_PROFILE: OpticalProfile = { id: 'gray4-400x240', gridWidth: 400, gridHeight: 240, bitsPerSymbol: 2, frameHoldCount: 1, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 export const RGB4_PROFILE: OpticalProfile = { id: 'rgb4-300x180', gridWidth: 300, gridHeight: 180, bitsPerSymbol: 2, colorMode: 'rgb', frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 export const RGB4_200_PROFILE: OpticalProfile = { id: 'rgb4-200x120', gridWidth: 200, gridHeight: 120, bitsPerSymbol: 2, colorMode: 'rgb', frameHoldCount: 2, targetDisplayFps: 60, expectedCameraFps: 60, fecRatio: 0.2 }
 
 // Append only: profile numbers are present in optical headers and acoustic negotiation.
-export const OPTICAL_PROFILES = [DEBUG_PROFILE, BINARY_PROFILE, GRAY4_PROFILE, TARGET_PROFILE, RGB4_PROFILE, RGB4_200_PROFILE, WIDE_BINARY_PROFILE] as const
+export const OPTICAL_PROFILES = [DEBUG_PROFILE, BINARY_PROFILE, GRAY4_PROFILE, TARGET_PROFILE, RGB4_PROFILE, RGB4_200_PROFILE, WIDE_BINARY_PROFILE, DENSE_BINARY_PROFILE] as const
 export function opticalProfileNumber(profile: OpticalProfile) { return OPTICAL_PROFILES.findIndex(item => item.id === profile.id) + 1 }
 
 export const PROTOCOL_VERSION = 1
@@ -98,7 +111,7 @@ const RGB_DATA_COPIES = 3
 const BINARY_COPIES = 3
 export const BINARY_200_REPEATED_MAX_BYTES = BINARY_PROFILE.gridWidth * BINARY_PROFILE.gridHeight / (8 * BINARY_COPIES)
 export function binaryRepeatedPayloadCapacity(profile: OpticalProfile) {
-  return profile.id === BINARY_PROFILE.id || profile.id === WIDE_BINARY_PROFILE.id
+  return profile.id === BINARY_PROFILE.id || profile.id === WIDE_BINARY_PROFILE.id || profile.id === DENSE_BINARY_PROFILE.id
     ? Math.floor(profile.gridWidth * profile.gridHeight / (8 * BINARY_COPIES)) : 0
 }
 // A single display cell was not reliably separable through the physical

@@ -8,6 +8,7 @@ import { OpticalBlockCollector, ReedSolomonBlockCodec, packOpticalSymbol, unpack
 import { makeMissingHintPayload, packControlPacket, readMissingHintPayload, unpackControlPacket, ControlType } from './control.ts'
 import { encodeOctalFskPacket, decodeOctalFskSamples } from './octal-fsk.ts'
 import { transferCompletionTag } from './handshake.ts'
+import { DENSE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, decodeOpticalCells, encodeOpticalFrame } from './index.ts'
 
 const map = new ReceivedBlockMap(); map.configure(66)
 for (const id of [65, 1, 33, 0, 1]) map.add(id)
@@ -50,6 +51,24 @@ assert.deepEqual(recovered, first.bytes, 'two missing shards recover through FEC
 assert.deepEqual(await aesGcmDecrypt(key, cyclicOpticalNonce(prefix, 5, 0), recovered!, cyclicOpticalBlockAad(session, 99, 5, 0)), plain)
 const wrongVisit = unpackOpticalSymbol(packOpticalSymbol({ transferId: 99, blockId: 5, visit: 1, index: 8, sourceCount: 8, repairCount: 2, sourceBytes: encoded.sourceBytes, bytes: encoded.symbols[8] }))!
 assert.equal(collector.add(wrongVisit), null)
+
+// The denser profile must fit a full encrypted version-2 symbol, including
+// its four-byte visit field, while retaining three spatial copies and FEC.
+const denseShardBytes = binaryRepeatedPayloadCapacity(DENSE_BINARY_PROFILE) - 20
+const densePlain = Uint8Array.from({ length: denseShardBytes * 8 - 17 }, (_, i) => (i * 41 + 13) & 255)
+const denseCipher = await encryptor.encryptNext(6, densePlain)
+const denseBlock = codec.encode(denseCipher.bytes, denseShardBytes)
+const denseCollector = new OpticalBlockCollector(new ReedSolomonBlockCodec(ReedSolomonErasure.fromBytes(wasm)), 99, 6, denseCipher.visit)
+let denseRecovered: Uint8Array | null = null
+for (const index of [9, 8, 7, 6, 4, 3, 1, 0]) {
+  const packet = packOpticalSymbol({ transferId: 99, blockId: 6, visit: denseCipher.visit, index, sourceCount: 8, repairCount: 2, sourceBytes: denseBlock.sourceBytes, bytes: denseBlock.symbols[index] })
+  assert.equal(packet.length, binaryRepeatedPayloadCapacity(DENSE_BINARY_PROFILE))
+  const frame = encodeOpticalFrame(packet, index + 100, 6, DENSE_BINARY_PROFILE)
+  const decoded = decodeOpticalCells(frame.cells, DENSE_BINARY_PROFILE)
+  if (!decoded.ok) throw new Error(`Dense secure optical frame failed: ${decoded.reason}`)
+  denseRecovered = denseCollector.add(unpackOpticalSymbol(decoded.payload)!) || denseRecovered
+}
+assert.deepEqual(await aesGcmDecrypt(key, cyclicOpticalNonce(prefix, 6, denseCipher.visit), denseRecovered!, cyclicOpticalBlockAad(session, 99, 6, denseCipher.visit)), densePlain)
 
 const digest = createHash('sha256').update(plain).digest(), transcript = Uint8Array.from({ length: 32 }, (_, i) => 90 + i)
 const complete = transferCompletionTag(key, transcript, digest, 1)
