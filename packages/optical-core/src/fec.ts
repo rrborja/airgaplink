@@ -39,30 +39,34 @@ export class ReedSolomonBlockCodec {
 
 const SYMBOL_MAGIC = 0x4f53 // OS
 export const SYMBOL_HEADER_BYTES = 16
-export interface OpticalSymbol { transferId: number; blockId: number; index: number; sourceCount: number; repairCount: number; sourceBytes: number; bytes: Uint8Array }
+export const CYCLIC_SYMBOL_HEADER_BYTES = 20
+export interface OpticalSymbol { transferId: number; blockId: number; index: number; sourceCount: number; repairCount: number; sourceBytes: number; bytes: Uint8Array; visit?: number }
 
 export function packOpticalSymbol(symbol: OpticalSymbol) {
-  if (symbol.index >= symbol.sourceCount + symbol.repairCount || symbol.sourceBytes > 65535) throw new Error('Invalid optical symbol')
-  const packet = new Uint8Array(SYMBOL_HEADER_BYTES + symbol.bytes.length), view = new DataView(packet.buffer)
+  if (symbol.index >= symbol.sourceCount + symbol.repairCount || symbol.sourceBytes > 65535 || (symbol.visit !== undefined && (!Number.isInteger(symbol.visit) || symbol.visit < 0 || symbol.visit > 0xffffffff))) throw new Error('Invalid optical symbol')
+  const cyclic = symbol.visit !== undefined, headerBytes = cyclic ? CYCLIC_SYMBOL_HEADER_BYTES : SYMBOL_HEADER_BYTES
+  const packet = new Uint8Array(headerBytes + symbol.bytes.length), view = new DataView(packet.buffer)
   view.setUint16(0, SYMBOL_MAGIC)
-  packet[2] = 1
+  packet[2] = cyclic ? 2 : 1
   packet[3] = symbol.index
   view.setUint32(4, symbol.transferId)
   view.setUint32(8, symbol.blockId)
   packet[12] = symbol.sourceCount
   packet[13] = symbol.repairCount
   view.setUint16(14, symbol.sourceBytes)
-  packet.set(symbol.bytes, SYMBOL_HEADER_BYTES)
+  if (cyclic) view.setUint32(16, symbol.visit!)
+  packet.set(symbol.bytes, headerBytes)
   return packet
 }
 
 export function unpackOpticalSymbol(packet: Uint8Array): OpticalSymbol | null {
   if (packet.length <= SYMBOL_HEADER_BYTES) return null
   const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength)
-  if (view.getUint16(0) !== SYMBOL_MAGIC || packet[2] !== 1) return null
+  const version = packet[2], headerBytes = version === 2 ? CYCLIC_SYMBOL_HEADER_BYTES : SYMBOL_HEADER_BYTES
+  if (view.getUint16(0) !== SYMBOL_MAGIC || (version !== 1 && version !== 2) || packet.length <= headerBytes) return null
   const index = packet[3], sourceCount = packet[12], repairCount = packet[13], sourceBytes = view.getUint16(14)
-  if (!sourceCount || !repairCount || index >= sourceCount + repairCount || sourceBytes > sourceCount * (packet.length - SYMBOL_HEADER_BYTES)) return null
-  return { transferId: view.getUint32(4), blockId: view.getUint32(8), index, sourceCount, repairCount, sourceBytes, bytes: packet.slice(SYMBOL_HEADER_BYTES) }
+  if (!sourceCount || !repairCount || index >= sourceCount + repairCount || sourceBytes > sourceCount * (packet.length - headerBytes)) return null
+  return { transferId: view.getUint32(4), blockId: view.getUint32(8), index, sourceCount, repairCount, sourceBytes, bytes: packet.slice(headerBytes), ...(version === 2 ? { visit: view.getUint32(16) } : {}) }
 }
 
 /** One bounded block at a time; duplicate optical frames are harmless. */
@@ -72,9 +76,10 @@ export class OpticalBlockCollector {
   private readonly codec: ReedSolomonBlockCodec
   readonly transferId: number
   readonly blockId: number
-  constructor(codec: ReedSolomonBlockCodec, transferId: number, blockId: number) { this.codec = codec; this.transferId = transferId; this.blockId = blockId }
+  readonly visit?: number
+  constructor(codec: ReedSolomonBlockCodec, transferId: number, blockId: number, visit?: number) { this.codec = codec; this.transferId = transferId; this.blockId = blockId; this.visit = visit }
   add(symbol: OpticalSymbol): Uint8Array | null {
-    if (symbol.transferId !== this.transferId || symbol.blockId !== this.blockId) return null
+    if (symbol.transferId !== this.transferId || symbol.blockId !== this.blockId || symbol.visit !== this.visit) return null
     const parameters = `${symbol.sourceCount}:${symbol.repairCount}:${symbol.sourceBytes}:${symbol.bytes.length}`
     if (this.parameters && this.parameters !== parameters) return null
     this.parameters = parameters

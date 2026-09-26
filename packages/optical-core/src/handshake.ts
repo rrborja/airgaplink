@@ -28,6 +28,9 @@ export const HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO = 1024
 export const HANDSHAKE_CAPABILITY_HEX_FSK = 2048
 /** Experimental differential-BPSK OFDM acoustic packets. */
 export const HANDSHAKE_CAPABILITY_OFDM = 4096
+/** Version-2 optical symbols carry a per-visit AES-GCM nonce counter; audio
+ * block reports become non-authoritative sparse scheduling hints. */
+export const HANDSHAKE_CAPABILITY_SPARSE_STREAM = 8192
 export const HANDSHAKE_NACK_MAGIC = Uint8Array.of(0x41, 0x48, 0x4e, 1) // AHN1
 export const HANDSHAKE_NACK_LEGACY = 1
 export const HANDSHAKE_NACK_DENSE = 2
@@ -76,6 +79,13 @@ export function sasCode(key: Uint8Array, transcriptHash: Uint8Array) {
   return `${Math.floor(value / 1_000_000).toString().padStart(3, '0')}-${(Math.floor(value / 1_000) % 1_000).toString().padStart(3, '0')}-${(value % 1_000).toString().padStart(3, '0')}`
 }
 export function keyConfirm(key: Uint8Array, transcriptHash: Uint8Array) { return hmacSha256(key, transcriptHash, utf8ToBytes('sender-confirm')) }
+/** Twelve-byte authenticated completion, sent only after full archive SHA-256
+ * verification. Compact legacy completion remains unchanged for older peers. */
+export function transferCompletionTag(key: Uint8Array, transcriptHash: Uint8Array, archiveDigest: Uint8Array, totalBlocks: number) {
+  check(key, 32, 'confirmation key'); check(transcriptHash, 32, 'transcript hash'); check(archiveDigest, 32, 'archive digest')
+  if (!Number.isInteger(totalBlocks) || totalBlocks < 1 || totalBlocks > 0xffffffff) throw new Error('Invalid block count')
+  return hmacSha256(key, utf8ToBytes('airgaplink/complete/v1'), transcriptHash, archiveDigest, u32(totalBlocks)).slice(0, 12)
+}
 /** V2 optical confirmation authenticates the physical mode selected after
  * hearing the response, so the receiver uses the same mode for READY/ACKs. */
 export function keyConfirmAudioMode(key: Uint8Array, transcriptHash: Uint8Array, toneCount: AcousticToneCount) {

@@ -65,6 +65,21 @@ export function opticalBlockAad(sessionId: Uint8Array, transferId: number, block
   return bytes
 }
 
+/** Version-2 block visits use a full 32-bit counter. Each visit has a fresh
+ * nonce; no ciphertext cache or receiver ACK is needed for cyclic replay. */
+export function cyclicOpticalNonce(prefix: Uint8Array, blockId: number, visit: number) {
+  if (prefix.length !== 4 || !Number.isInteger(blockId) || blockId < 0 || blockId > 0xffffffff || !Number.isInteger(visit) || visit < 0 || visit > 0xffffffff) throw new Error('Invalid cyclic optical nonce fields')
+  const nonce = new Uint8Array(AES_GCM_NONCE_BYTES), view = new DataView(nonce.buffer)
+  nonce.set(prefix); view.setUint32(4, blockId); view.setUint32(8, visit)
+  return nonce
+}
+export function cyclicOpticalBlockAad(sessionId: Uint8Array, transferId: number, blockId: number, visit: number) {
+  if (!Number.isInteger(visit) || visit < 0 || visit > 0xffffffff) throw new Error('Invalid cyclic optical visit')
+  const base = opticalBlockAad(sessionId, transferId, blockId), bytes = new Uint8Array(base.length + 4)
+  bytes.set(base); new DataView(bytes.buffer).setUint32(base.length, visit)
+  return bytes
+}
+
 export async function aesGcmEncrypt(key: Uint8Array, nonce: Uint8Array, plaintext: Uint8Array, aad: Uint8Array) {
   if (key.length !== 32 || nonce.length !== AES_GCM_NONCE_BYTES) throw new Error('Invalid AES-GCM key or nonce')
   const imported = await globalThis.crypto.subtle.importKey('raw', webBytes(key), 'AES-GCM', false, ['encrypt'])
@@ -105,6 +120,31 @@ export class OpticalBlockEncryptor {
   evict(blockId: number) { this.ciphertext.delete(blockId) }
   evictAcknowledged(acknowledged: ReadonlySet<number>, preserveBlockId?: number) { for (const blockId of this.ciphertext.keys()) if (blockId !== preserveBlockId && acknowledged.has(blockId)) this.ciphertext.delete(blockId) }
   clear() { this.destroyed = true; this.ciphertext.clear(); this.pending.clear() }
+}
+
+/** Per-block monotonic visit counters avoid nonce reuse while keeping only
+ * counter metadata in memory, even for indefinitely repeated large files. */
+export class CyclicOpticalBlockEncryptor {
+  private readonly nextVisit = new Map<number, number>()
+  private destroyed = false
+  private readonly key: Uint8Array
+  private readonly noncePrefix: Uint8Array
+  private readonly sessionId: Uint8Array
+  private readonly transferId: number
+  constructor(key: Uint8Array, noncePrefix: Uint8Array, sessionId: Uint8Array, transferId: number) {
+    if (key.length !== 32 || noncePrefix.length !== 4 || sessionId.length !== SESSION_ID_BYTES) throw new Error('Invalid cyclic optical encryption parameters')
+    this.key = key; this.noncePrefix = noncePrefix; this.sessionId = sessionId; this.transferId = transferId
+  }
+  async encryptNext(blockId: number, plaintext: Uint8Array) {
+    if (this.destroyed || !Number.isInteger(blockId) || blockId < 0 || blockId > 0xffffffff) throw new Error('Invalid cyclic optical block')
+    const visit = this.nextVisit.get(blockId) || 0
+    if (visit > 0xffffffff) throw new Error('Cyclic optical nonce counter exhausted')
+    this.nextVisit.set(blockId, visit + 1)
+    const bytes = await aesGcmEncrypt(this.key, cyclicOpticalNonce(this.noncePrefix, blockId, visit), plaintext, cyclicOpticalBlockAad(this.sessionId, this.transferId, blockId, visit))
+    if (this.destroyed) throw new Error('Cyclic optical encryptor was cleared')
+    return { visit, bytes }
+  }
+  clear() { this.destroyed = true; this.nextVisit.clear() }
 }
 
 export function zeroBytes(bytes: Uint8Array | undefined) { if (bytes) bytes.fill(0) }
