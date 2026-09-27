@@ -1,4 +1,4 @@
-import { DEBUG_PROFILE, OPTICAL_PROFILES, RGB_BOOTSTRAP_FRAME_TAG, TemporalOpticalRecovery, crc32, decodeOpticalCells, detectOpticalBoundary, frameDimensions, sampleOpticalCells, type FinderReport, type OpticalBoundary, type OpticalImage, type OpticalImageDecode, type Point } from '@qrcopy/optical-core'
+import { DEBUG_PROFILE, OPTICAL_PROFILES, RGB_BOOTSTRAP_FRAME_TAG, TemporalOpticalRecovery, crc32, decodeOpticalCells, detectOpticalBoundary, detectOpticalBoundaryNear, frameDimensions, sampleOpticalCells, type FinderReport, type OpticalBoundary, type OpticalImage, type OpticalImageDecode, type Point } from '@qrcopy/optical-core'
 import { GpuOpticalSampler } from './gpu-optical-sampler'
 
 // File pixels stay inside this worker and are never supplied to a network API.
@@ -7,6 +7,8 @@ let finderContext: OffscreenCanvasRenderingContext2D | null = null
 let cropCanvas: OffscreenCanvas | undefined
 let cropContext: OffscreenCanvasRenderingContext2D | null = null
 let boundary: OpticalBoundary | undefined // Native camera coordinates.
+let lastGoodBoundary: OpticalBoundary | undefined
+let nearBoundaryActive = false
 let failureStreak = 0
 let lastAcquisition = 0
 let decodedCount = 0
@@ -24,7 +26,7 @@ function localBoundary(value: OpticalBoundary, x: number, y: number, scale: numb
 }
 
 async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; reset?: boolean; sentAt?: number }) {
-  if (data.reset) { boundary = undefined; failureStreak = 0; lastAcquisition = 0; temporalRecovery.clear(); return }
+  if (data.reset) { boundary = undefined; lastGoodBoundary = undefined; nearBoundaryActive = false; failureStreak = 0; lastAcquisition = 0; temporalRecovery.clear(); return }
   const bitmap = data.bitmap
   if (!bitmap) return
   const profile = OPTICAL_PROFILES.find(item => item.id === data.profileId) || DEBUG_PROFILE
@@ -43,10 +45,14 @@ async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; res
     if (finderContext) {
       finderContext.drawImage(bitmap, 0, 0, width, height)
       const image = finderContext.getImageData(0, 0, width, height)
+      const pixels = { data: image.data, width, height }
+      const previous = lastGoodBoundary && localBoundary(lastGoodBoundary, 0, 0, scale)
+      const nearby = previous && detectOpticalBoundaryNear(pixels, previous, profile)
       const report: FinderReport = { stage: 'top-left' }
-      const found = detectOpticalBoundary({ data: image.data, width, height }, profile, report)
-      finderStage = report.stage
+      const found = nearby || detectOpticalBoundary(pixels, profile, report)
+      finderStage = nearby ? 'near-reacquired' : report.stage
       if (found) {
+        nearBoundaryActive = !!nearby
         const expand = (point: Point): Point => ({ x: point.x / scale, y: point.y / scale })
         boundary = { topLeft: expand(found.topLeft), topRight: expand(found.topRight), bottomRight: expand(found.bottomRight), bottomLeft: expand(found.bottomLeft), confidence: found.confidence }
       }
@@ -168,7 +174,7 @@ async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; res
     if (recovered) result = { ...recovered, boundary, sampledCells: result.sampledCells, symbolConfidence: result.symbolConfidence }
   }
   bitmap.close()
-  if (result.ok) failureStreak = 0
+  if (result.ok) { failureStreak = 0; lastGoodBoundary = boundary; nearBoundaryActive = false }
   else {
     failureStreak += 1
     const trustedGeometry = result.reason === 'payload-crc' && !!result.header && (result.symbolConfidence || 0) >= 0.5
@@ -176,7 +182,7 @@ async function processFrame(data: { bitmap?: ImageBitmap; profileId: string; res
     // A stale quadrilateral can keep sampling the wrong cells even though the
     // frame remains visible. Valid metadata and strong contrast instead get
     // time to accumulate repeated payloads before a more costly re-find.
-    if (failureStreak >= (trustedGeometry ? 90 : 8)) { boundary = undefined; failureStreak = 0; lastAcquisition = 0 }
+    if (failureStreak >= (trustedGeometry ? 90 : 8)) { if (nearBoundaryActive) lastGoodBoundary = undefined; nearBoundaryActive = false; boundary = undefined; failureStreak = 0; lastAcquisition = 0 }
   }
   // The sampled grid is only needed for a UI snapshot; don't copy it every frame.
   const diagnosticsGrid = result.sampledCells && ++decodedCount % 25 === 0 ? result.sampledCells : undefined

@@ -25,7 +25,7 @@ export type { HandshakeOffer, HandshakeResponse, HandshakeMaterial } from './han
 export { HANDSHAKE_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_FRAGMENTS, MAX_HANDSHAKE_MESSAGE_BYTES, DENSE_HANDSHAKE_DATA_BYTES, DENSE_HANDSHAKE_PARITY_FRAGMENTS, MAX_DENSE_HANDSHAKE_FRAGMENTS, fragmentHandshakeMessage, fragmentDenseHandshakeResponse, rotateHandshakePackets, selectHandshakeResponseFragments, selectHandshakeNackRetransmissions, isFreshHandshakeNackRequest, parseHandshakeFragment, parseDenseHandshakeFragment, denseHandshakeSessionTag, AcousticFragmentReassembler, DenseHandshakeReassembler } from './acoustic-fragment.ts'
 export { AUDIO_PACE_FPS, AdaptiveOpticalPace, opticalPaceFps, recommendOpticalPaceCode, type OpticalPaceWindow } from './pacing.ts'
 export { TemporalOpticalRecovery } from './temporal-recovery.ts'
-export { CALIBRATION_STAGE_MS, CALIBRATION_END_STAGE, calibrationRates, calibrationFrameId, readCalibrationFrameId, selectCalibratedPaceCode } from './calibration.ts'
+export { CALIBRATION_STAGE_MS, CALIBRATION_END_STAGE, calibrationRates, calibrationFrameId, readCalibrationFrameId, countRecoverableCalibrationVisits, selectCalibratedPaceCode } from './calibration.ts'
 export type { CalibrationSample } from './calibration.ts'
 
 export interface OpticalProfile {
@@ -625,6 +625,30 @@ export function transformForBoundary(boundary: OpticalBoundary, profile: Optical
   return homography([{ x: 0, y: 0 }, { x: width, y: 0 }, { x: width, y: height }, { x: 0, y: height }], [boundary.topLeft, boundary.topRight, boundary.bottomRight, boundary.bottomLeft])
 }
 
+function boundaryFromFinders(profile: OpticalProfile, topLeft: FinderMatch, topRight: FinderMatch, bottomRight: FinderMatch, bottomLeft: FinderMatch) {
+  const { width, height } = frameDimensions(profile), center = FINDER_INSET + FINDER_SIZE / 2
+  const pixelCenter = (point: Point): Point => ({ x: point.x + 0.5, y: point.y + 0.5 })
+  const transform = homography([{ x: center, y: center }, { x: width - center, y: center }, { x: width - center, y: height - center }, { x: center, y: height - center }], [topLeft, topRight, bottomRight, bottomLeft].map(pixelCenter))
+  if (!transform) return null
+  return { topLeft: mapPoint(transform, { x: 0, y: 0 }), topRight: mapPoint(transform, { x: width, y: 0 }), bottomRight: mapPoint(transform, { x: width, y: height }), bottomLeft: mapPoint(transform, { x: 0, y: height }), confidence: 1 }
+}
+
+/** Search around the last known screen geometry before scanning the entire
+ * camera frame. This is especially useful after a few torn/blurred frames. */
+export function detectOpticalBoundaryNear(image: OpticalImage, previous: OpticalBoundary, profile = DEBUG_PROFILE): OpticalBoundary | null {
+  const transform = transformForBoundary(previous, profile)
+  if (!transform) return null
+  const { width, height } = frameDimensions(profile), center = FINDER_INSET + FINDER_SIZE / 2
+  const horizontalCell = Math.hypot(previous.topRight.x - previous.topLeft.x, previous.topRight.y - previous.topLeft.y) / width
+  const verticalCell = Math.hypot(previous.bottomLeft.x - previous.topLeft.x, previous.bottomLeft.y - previous.topLeft.y) / height
+  const radius = Math.min(horizontalCell, verticalCell) * FINDER_SIZE / 2
+  if (!Number.isFinite(radius) || radius < 2) return null
+  const points = [{ x: center, y: center }, { x: width - center, y: center }, { x: width - center, y: height - center }, { x: center, y: height - center }]
+  const matches = points.map(point => findFinderNear(image, mapPoint(transform, point), radius))
+  if (matches.some(match => !match)) return null
+  return boundaryFromFinders(profile, matches[0]!, matches[1]!, matches[2]!, matches[3]!)
+}
+
 /** Expensive first-frame detection. Later frames reuse the returned boundary. */
 export function detectOpticalBoundary(image: OpticalImage, profile = DEBUG_PROFILE, report?: FinderReport): OpticalBoundary | null {
   if (report) report.stage = 'top-left'
@@ -651,13 +675,7 @@ export function detectOpticalBoundary(image: OpticalImage, profile = DEBUG_PROFI
   const bottomLeft = findFinder(image, Math.max(0, topLeft.x - image.width * 0.18), Math.min(image.width * 0.55, topLeft.x + image.width * 0.18), image.height * 0.45, image.height, profile, (topLeft.radius + topRight.radius + bottomRight.radius) / 3)
   if (!bottomLeft) return null
   if (report) { report.bottomLeft = bottomLeft; report.stage = 'complete' }
-  const { width, height } = frameDimensions(profile), center = FINDER_INSET + FINDER_SIZE / 2
-  // Finder probes use integer pixel indices as centers. The perspective
-  // transform uses image coordinates whose integer values are pixel edges.
-  const pixelCenter = (point: Point): Point => ({ x: point.x + 0.5, y: point.y + 0.5 })
-  const transform = homography([{ x: center, y: center }, { x: width - center, y: center }, { x: width - center, y: height - center }, { x: center, y: height - center }], [topLeft, topRight, bottomRight, bottomLeft].map(pixelCenter))
-  if (!transform) return null
-  return { topLeft: mapPoint(transform, { x: 0, y: 0 }), topRight: mapPoint(transform, { x: width, y: 0 }), bottomRight: mapPoint(transform, { x: width, y: height }), bottomLeft: mapPoint(transform, { x: 0, y: height }), confidence: 1 }
+  return boundaryFromFinders(profile, topLeft, topRight, bottomRight, bottomLeft)
 }
 
 function sampleRgbOpticalCells(image: OpticalImage, transform: number[], profile: OpticalProfile, dataOffset: Point) {

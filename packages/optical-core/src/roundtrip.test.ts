@@ -1,4 +1,4 @@
-import { BINARY_200_REPEATED_MAX_BYTES, BINARY_PROFILE, DEBUG_PROFILE, DENSE_BINARY_PROFILE, GRAY4_PROFILE, RGB4_200_PROFILE, RGB4_PROFILE, RGB_BOOTSTRAP_FRAME_TAG, TARGET_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, calibrationFrameId, decodeOpticalCells, decodeOpticalImage, deterministicPayload, encodeOpticalFrame, framePayloadCapacity, isDeterministicPayload, opticalProfileNumber, rasterizeOpticalCells, sampleOpticalCells } from './index.ts'
+import { BINARY_200_REPEATED_MAX_BYTES, BINARY_PROFILE, DEBUG_PROFILE, DENSE_BINARY_PROFILE, GRAY4_PROFILE, RGB4_200_PROFILE, RGB4_PROFILE, RGB_BOOTSTRAP_FRAME_TAG, TARGET_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, calibrationFrameId, decodeOpticalCells, decodeOpticalImage, detectOpticalBoundaryNear, deterministicPayload, encodeOpticalFrame, framePayloadCapacity, isDeterministicPayload, opticalProfileNumber, rasterizeOpticalCells, sampleOpticalCells } from './index.ts'
 
 const payload = deterministicPayload(42, framePayloadCapacity(DEBUG_PROFILE))
 const encoded = encodeOpticalFrame(payload, 42, 7)
@@ -30,6 +30,10 @@ for (let y = 0; y < cameraHeight; y += 1) for (let x = 0; x < cameraWidth; x += 
 }
 const cameraDecoded = decodeOpticalImage({ data: camera, width: cameraWidth, height: cameraHeight })
 if (!cameraDecoded.ok || cameraDecoded.header.frameId !== 42) throw new Error(`Camera-like image round trip failed: ${cameraDecoded.ok ? 'wrong frame' : cameraDecoded.reason}`)
+const movedBoundary = cameraDecoded.boundary && Object.fromEntries(Object.entries(cameraDecoded.boundary).map(([key, point]) => key === 'confidence' ? [key, point] : [key, { x: (point as { x: number }).x + 5, y: (point as { y: number }).y - 4 }])) as typeof cameraDecoded.boundary
+const nearbyBoundary = movedBoundary && detectOpticalBoundaryNear({ data: camera, width: cameraWidth, height: cameraHeight }, movedBoundary)
+const nearbyDecoded = nearbyBoundary && decodeOpticalImage({ data: camera, width: cameraWidth, height: cameraHeight }, DEBUG_PROFILE, nearbyBoundary)
+if (!nearbyDecoded?.ok || nearbyDecoded.header.frameId !== 42) throw new Error('Guided finder reacquisition did not recover a shifted camera boundary')
 const softened = new Uint8ClampedArray(camera.length)
 for (let y = 0; y < cameraHeight; y += 1) for (let x = 0; x < cameraWidth; x += 1) {
   let total = 0

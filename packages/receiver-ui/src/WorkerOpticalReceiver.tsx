@@ -5,7 +5,7 @@ import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_M
 import { HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_FAST_READY, fastReadyNegotiated, fastReadyPackets, octalSymbolSeconds, readyConfirmFast, rotateHandshakePackets } from '@qrcopy/optical-core'
 import { isFreshHandshakeNackRequest } from '@qrcopy/optical-core'
 import { HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO, HANDSHAKE_CAPABILITY_HEX_FSK, HANDSHAKE_CAPABILITY_OFDM, decodeAudioModeSelect, denseHandshakeSessionTag, encodeHexCompactFskPacket, encodeHexFskHandshakePacket, encodeHexFskPacket, encodeOfdmCompactPacket, encodeOfdmHandshakePacket, encodeOfdmPacket } from '@qrcopy/optical-core'
-import { AdaptiveOpticalPace } from '@qrcopy/optical-core'
+import { AdaptiveOpticalPace, countRecoverableCalibrationVisits } from '@qrcopy/optical-core'
 import { RGB_BOOTSTRAP_FRAME_TAG, makeOpticalQualityPayload } from '@qrcopy/optical-core'
 import { HANDSHAKE_CAPABILITY_SPARSE_STREAM, ReceivedBlockMap, cyclicOpticalBlockAad, cyclicOpticalNonce, makeMissingHintPayload, transferCompletionTag } from '@qrcopy/optical-core'
 import { CameraFrameMeter, applyShortExposure, cameraSettingsSummary, restoreAutoExposure, type CameraSettingsSummary } from './camera-telemetry'
@@ -27,7 +27,7 @@ export function WorkerOpticalReceiver() {
   const wasmBytes = useRef<Uint8Array | null>(null), recoveryCodec = useRef<ReedSolomonBlockCodec | null>(null), fileState = useRef<FileReceiveState>(emptyFileState())
   const speaker = useRef<AudioContext | null>(null), speakerTimer = useRef<number | null>(null), completionStopTimer = useRef<number | null>(null), readyPlaybackTimer = useRef<number | null>(null), audioSequence = useRef(0), verified = useRef(false), readySent = useRef(false), alignmentSeen = useRef(false), opticalLost = useRef(false), lastOpticalAt = useRef(0), resumeRepeats = useRef(0), completeSignalsSent = useRef(0), nextAudioStart = useRef(0)
   const handshakeRef = useRef<{ state: ReceiverHandshakeState; offer?: HandshakeOffer; responseCapabilities?: number; privateKey?: Uint8Array; publicKey?: Uint8Array; material?: HandshakeMaterial; responseMessage?: Uint8Array; responsePackets?: ControlPacket[]; nextFullRetryAt?: number; lastNackRequestId?: number; lastNackAt?: number; selectivePackets?: number; selectedMode?: 8 | 16 | 32; acousticAirtimeSeconds?: number; readyMessage?: Uint8Array; fastReadyMac?: Uint8Array; audioMode?: AcousticToneCount; responseRounds: number; readyRounds: number; outgoing: ControlPacket[]; reassembler: AcousticFragmentReassembler }>({ state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() })
-  const fileDecodeStats = useRef({ symbols: 0, usefulShards: 0, usefulShardBytes: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 })
+  const fileDecodeStats = useRef({ symbols: 0, usefulShards: 0, usefulShardBytes: 0, recoveredBlocks: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 })
   const sparseStorageAvailable = useRef(false), sparseStorageProbeDone = useRef(false)
   const completionTagRef = useRef<Uint8Array | null>(null), lastPaceReportAt = useRef(0), lastHintAt = useRef(0), hintCursor = useRef(0), duplicateBlocks = useRef(0), wastedFrames = useRef(0)
   const qualityFeedbackRef = useRef<{ transferId: number; failures: number; nextAt: number } | null>(null)
@@ -235,7 +235,7 @@ export function WorkerOpticalReceiver() {
     }, 1000)
     return () => window.clearInterval(timer)
   }, [task, connectionMode, cameraActive, profile, audioSessionId])
-  const resetFile = () => { cancelHandshake(); handshakeRef.current = { state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() }; setHandshakeState('WAITING_FOR_OFFER'); setResponseRounds(0); sasManuallyVerifiedRef.current = false; stopSpeaker(); void fileState.current.sink?.remove(); fileState.current = emptyFileState(); fileDecodeStats.current = { symbols: 0, usefulShards: 0, usefulShardBytes: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 }; completionTagRef.current = null; lastPaceReportAt.current = 0; lastHintAt.current = 0; hintCursor.current = 0; duplicateBlocks.current = 0; wastedFrames.current = 0; verified.current = false; readySent.current = false; alignmentSeen.current = false; opticalLost.current = false; lastOpticalAt.current = 0; resumeRepeats.current = 0; pacingCode.current = 0; selectedPaceCode.current = 0; calibrationMode.current = 'idle'; calibrationSamples.current.clear(); setRecommendedPace(0); setOpticalLink('searching'); completeSignalsSent.current = 0; fileStarted.current = 0; const nextSessionId = crypto.getRandomValues(new Uint32Array(1))[0]; audioSessionIdRef.current = nextSessionId; setAudioSessionId(nextSessionId); setCameraActive(true); setFileProgress({ blocks: 0, totalBlocks: 0, receivedBytes: 0, totalBytes: 0, verifiedBytes: 0, elapsedSeconds: 0 }); if (downloadUrl) URL.revokeObjectURL(downloadUrl); setDownloadUrl(null); setFileStatus('Waiting for secure optical handshake offer') }
+  const resetFile = () => { cancelHandshake(); handshakeRef.current = { state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() }; setHandshakeState('WAITING_FOR_OFFER'); setResponseRounds(0); sasManuallyVerifiedRef.current = false; stopSpeaker(); void fileState.current.sink?.remove(); fileState.current = emptyFileState(); fileDecodeStats.current = { symbols: 0, usefulShards: 0, usefulShardBytes: 0, recoveredBlocks: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 }; completionTagRef.current = null; lastPaceReportAt.current = 0; lastHintAt.current = 0; hintCursor.current = 0; duplicateBlocks.current = 0; wastedFrames.current = 0; verified.current = false; readySent.current = false; alignmentSeen.current = false; opticalLost.current = false; lastOpticalAt.current = 0; resumeRepeats.current = 0; pacingCode.current = 0; selectedPaceCode.current = 0; calibrationMode.current = 'idle'; calibrationSamples.current.clear(); setRecommendedPace(0); setOpticalLink('searching'); completeSignalsSent.current = 0; fileStarted.current = 0; const nextSessionId = crypto.getRandomValues(new Uint32Array(1))[0]; audioSessionIdRef.current = nextSessionId; setAudioSessionId(nextSessionId); setCameraActive(true); setFileProgress({ blocks: 0, totalBlocks: 0, receivedBytes: 0, totalBytes: 0, verifiedBytes: 0, elapsedSeconds: 0 }); if (downloadUrl) URL.revokeObjectURL(downloadUrl); setDownloadUrl(null); setFileStatus('Waiting for secure optical handshake offer') }
   const markStored = (state: FileReceiveState, blockId: number) => {
     if (fileState.current !== state || state.received.has(blockId)) return
     const manifest = state.manifest
@@ -433,8 +433,8 @@ export function WorkerOpticalReceiver() {
       const calibration = readCalibrationFrameId(result.header.frameId)
       if (opticalLost.current && !calibration && result.header.frameId === 0 && calibrationMode.current !== 'transferring') { calibrationMode.current = 'idle'; selectedPaceCode.current = 0; calibrationSamples.current.clear() }
       if (calibration?.stage === CALIBRATION_END_STAGE && calibrationMode.current !== 'selected' && calibrationMode.current !== 'transferring') {
-        const samples = new Map<number, { firstSequence: number; lastSequence: number; uniqueFrames: number; distinctShards: number; spanMs: number }>()
-        for (const [stage, item] of calibrationSamples.current) samples.set(stage, { firstSequence: item.firstSequence, lastSequence: item.lastSequence, uniqueFrames: item.seen.size, distinctShards: item.shards.size, spanMs: item.lastAt - item.firstAt })
+        const samples = new Map<number, { firstSequence: number; lastSequence: number; uniqueFrames: number; distinctShards: number; spanMs: number; recoverableVisits: number }>()
+        for (const [stage, item] of calibrationSamples.current) samples.set(stage, { firstSequence: item.firstSequence, lastSequence: item.lastSequence, uniqueFrames: item.seen.size, distinctShards: item.shards.size, spanMs: item.lastAt - item.firstAt, recoverableVisits: countRecoverableCalibrationVisits(item.seen) })
         const code = selectCalibratedPaceCode(profile, samples)
         selectedPaceCode.current = code; pacingCode.current = code; adaptivePace.current = new AdaptiveOpticalPace(profile, code); setRecommendedPace(opticalPaceFps(code))
         calibrationMode.current = 'selected'
@@ -449,7 +449,7 @@ export function WorkerOpticalReceiver() {
       } else if (!calibration && result.header.frameId > 0) calibrationMode.current = 'transferring'
       lastOpticalAt.current = performance.now()
       if (!alignmentSeen.current) { alignmentSeen.current = true; setOpticalLink('aligned'); sendAcousticStatus() }
-      else if (opticalLost.current) { opticalLost.current = false; resumeRepeats.current = 1; setOpticalLink('aligned'); sendAcousticStatus() }
+      else if (opticalLost.current) { opticalLost.current = false; resumeRepeats.current = 1; setOpticalLink('aligned'); setFileStatus(calibrationMode.current === 'transferring' ? 'Optical link reacquired. Receiving encrypted blocks…' : 'Optical link reacquired. Resuming calibration…'); sendAcousticStatus() }
       else if (calibrationMode.current === 'selected') sendAcousticStatus()
     }
     fileDecodeStats.current.symbols += 1
@@ -479,6 +479,7 @@ export function WorkerOpticalReceiver() {
       try { block = await aesGcmDecrypt(handshake.material.keys.opticalEncryptionKey, cyclic ? cyclicOpticalNonce(handshake.material.keys.sessionBindingKey.slice(0, 4), symbol.blockId, symbol.visit!) : opticalNonce(handshake.material.keys.sessionBindingKey.slice(0, 6), symbol.blockId, 0), block, cyclic ? cyclicOpticalBlockAad(handshake.offer.sessionId, symbol.transferId, symbol.blockId, symbol.visit!) : opticalBlockAad(handshake.offer.sessionId, symbol.transferId, symbol.blockId)); handshake.readyMessage = undefined; handshake.outgoing = [] }
       catch { state.collectors.delete(collectorKey); wastedFrames.current += collector.count; setFileStatus('Encrypted optical visit failed authentication; continuing cyclic repair'); return }
     }
+    fileDecodeStats.current.recoveredBlocks += 1
     state.blocks.set(symbol.blockId, block); for (const key of state.collectors.keys()) if (key.startsWith(`${symbol.blockId}:`)) state.collectors.delete(key)
     if (symbol.blockId === 0) {
       const manifest = unpackTransferManifest(block)
@@ -526,7 +527,7 @@ export function WorkerOpticalReceiver() {
     const cameraFrames = new CameraFrameMeter()
     const worker = new Worker(new URL('./optical-worker.ts', import.meta.url), { type: 'module' })
     workerRef.current = worker
-    const history: Array<{ at: number; bytes: number; valid: boolean; frameId: number | null; shards: number; shardBytes: number; storedBytes: number }> = []
+    const history: Array<{ at: number; bytes: number; valid: boolean; frameId: number | null; shards: number; shardBytes: number; recoveredBlocks: number; storedBytes: number }> = []
     const seen = new Set<number>()
     let valid = 0, failed = 0, processed = 0, lastUi = 0, adaptiveHistoryActive = false
     worker.onmessage = (event: MessageEvent<{ result: OpticalImageDecode; finderStage: string; decodeMs: number; acquireMs: number; drawMs: number; readMs: number; sampleMs: number; crcMs: number; pixelPath: string; gpuDiagnostic: string; temporalRecoveries: number; temporalCandidates: number }>) => {
@@ -544,7 +545,7 @@ export function WorkerOpticalReceiver() {
       if (result.ok) valid += 1; else failed += 1
       let uniqueBytes = 0
       if (result.ok && !seen.has(result.header.frameId)) { seen.add(result.header.frameId); uniqueBytes = result.payload.length }
-      history.push({ at: now, bytes: uniqueBytes, valid: result.ok, frameId: result.ok ? result.header.frameId : null, shards: fileDecodeStats.current.usefulShards, shardBytes: fileDecodeStats.current.usefulShardBytes, storedBytes: fileState.current.receivedBytes })
+      history.push({ at: now, bytes: uniqueBytes, valid: result.ok, frameId: result.ok ? result.header.frameId : null, shards: fileDecodeStats.current.usefulShards, shardBytes: fileDecodeStats.current.usefulShardBytes, recoveredBlocks: fileDecodeStats.current.recoveredBlocks, storedBytes: fileState.current.receivedBytes })
       while (history.length && now - history[0].at > 5000) history.shift()
       const span = history.length > 1 ? (now - history[0].at) / 1000 : 0
       const validWindow = history.filter(item => item.valid).length
@@ -552,12 +553,13 @@ export function WorkerOpticalReceiver() {
       const invalidWindow = history.length - validWindow
       const usefulShards = history[history.length - 1].shards - history[0].shards
       const usefulShardBytes = history[history.length - 1].shardBytes - history[0].shardBytes
+      const recoveredBlocks = history[history.length - 1].recoveredBlocks - history[0].recoveredBlocks
       const storedBytes = history[history.length - 1].storedBytes - history[0].storedBytes
       const advancing = history.filter(item => item.frameId !== null && item.frameId > 0)
       const senderSpan = advancing.length > 1 ? (advancing[advancing.length - 1].at - advancing[0].at) / 1000 : 0
       const observedSenderFps = senderSpan > 0 ? Math.min(profile.targetDisplayFps, Math.max(0, (advancing[advancing.length - 1].frameId! - advancing[0].frameId!) / senderSpan)) : 0
       if (transferring && history.length >= 3 && span >= 2) {
-        const code = adaptivePace.current.update({ processedFrames: history.length, validFrames: validWindow, uniqueFrames: uniqueWindow, usefulShards, usefulShardBytes, storedBytes, observedSenderFps, spanSeconds: span }, now)
+        const code = adaptivePace.current.update({ processedFrames: history.length, validFrames: validWindow, uniqueFrames: uniqueWindow, usefulShards, usefulShardBytes, recoveredBlocks, storedBytes, observedSenderFps, spanSeconds: span }, now)
         if (code !== pacingCode.current) { pacingCode.current = code; setRecommendedPace(opticalPaceFps(code)) }
       }
       if (result.sampledCells && gridRef.current) {
@@ -619,7 +621,7 @@ export function WorkerOpticalReceiver() {
     grid?.getContext('2d')?.clearRect(0, 0, grid.width, grid.height)
   }, [cameraActive])
   const exportMetrics = () => {
-    const content = JSON.stringify({ kind: 'physical-optical-diagnostics', timestamp: new Date().toISOString(), profile: profile.id, task, ...status, paceDiagnostics, opticalRecovery, cameraSettings, cameraControlStatus, recommendedPace, fileProgress, sparseReception: { missingBlocks: fileState.current.received.missingCount, duplicateBlockFrames: duplicateBlocks.current, usefulOpticalFrames: fileDecodeStats.current.usefulShards, wastedOpticalFrames: wastedFrames.current }, speakerStatus }, null, 2)
+    const content = JSON.stringify({ kind: 'physical-optical-diagnostics', timestamp: new Date().toISOString(), profile: profile.id, task, ...status, paceDiagnostics, opticalRecovery, cameraSettings, cameraControlStatus, recommendedPace, fileProgress, sparseReception: { missingBlocks: fileState.current.received.missingCount, recoveredBlocks: fileDecodeStats.current.recoveredBlocks, duplicateBlockFrames: duplicateBlocks.current, usefulOpticalFrames: fileDecodeStats.current.usefulShards, wastedOpticalFrames: wastedFrames.current }, speakerStatus }, null, 2)
     const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }))
     const link = document.createElement('a'); link.href = url; link.download = 'optical-diagnostics.json'; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
@@ -645,7 +647,7 @@ export function WorkerOpticalReceiver() {
     {task === 'file' && <p>Local ZIP storage: {diskStorage === 'checking' ? 'checking…' : diskStorage === 'opfs' ? 'browser-private file system' : diskStorage === 'indexeddb' ? 'IndexedDB blocks' : 'memory only'}</p>}
     {task === 'file' && diskStorage === 'memory' && <p role="alert">This browser has no writable local storage for large ZIPs. It can receive up to 16 MiB in memory. Use a normal browser window with IndexedDB or browser-private file storage for larger transfers. {storageProblem}</p>}
     {task === 'file' && fileProgress.totalBytes === 0 && <p>0 ZIP bytes received · {status.sessionRejects > 0 ? 'optical frames belong to a different audio session; re-pair the sender' : status.manifestShards > 0 ? `waiting for transfer manifest (${status.manifestShards} of 8 distinct symbols)` : 'waiting for transfer manifest'}</p>}
-    {task === 'file' && fileProgress.totalBytes > 0 && <div style={{ margin: '16px 0' }}><p><strong>{fileProgress.receivedBytes.toLocaleString()} / {fileProgress.totalBytes.toLocaleString()} ZIP bytes received ({(100 * fileProgress.receivedBytes / fileProgress.totalBytes).toFixed(1)}%)</strong></p><progress aria-label="ZIP bytes received" value={fileProgress.receivedBytes} max={fileProgress.totalBytes} style={{ width: '100%', height: 20 }} /><p>Blocks {fileProgress.blocks} / {fileProgress.totalBlocks} · {fileProgress.totalBlocks - fileProgress.blocks} missing · duplicate-block frames {duplicateBlocks.current} · useful/wasted optical frames {fileDecodeStats.current.usefulShards}/{wastedFrames.current} · average {(fileProgress.receivedBytes / Math.max(0.001, fileProgress.elapsedSeconds) / 1e6).toFixed(3)} MB/s · {fileProgress.verifiedBytes ? 'SHA-256 verified' : fileProgress.blocks < fileProgress.totalBlocks ? 'receiving missing blocks; SHA-256 starts when all are stored' : 'all blocks stored; checking local SHA-256'}</p></div>}
+    {task === 'file' && fileProgress.totalBytes > 0 && <div style={{ margin: '16px 0' }}><p><strong>{fileProgress.receivedBytes.toLocaleString()} / {fileProgress.totalBytes.toLocaleString()} ZIP bytes received ({(100 * fileProgress.receivedBytes / fileProgress.totalBytes).toFixed(1)}%)</strong></p><progress aria-label="ZIP bytes received" value={fileProgress.receivedBytes} max={fileProgress.totalBytes} style={{ width: '100%', height: 20 }} /><p>Blocks {fileProgress.blocks} / {fileProgress.totalBlocks} · {fileProgress.totalBlocks - fileProgress.blocks} missing · duplicate-block frames {duplicateBlocks.current} · useful/wasted optical frames {fileDecodeStats.current.usefulShards}/{wastedFrames.current} · average {fileProgress.elapsedSeconds >= 1 ? `${(fileProgress.receivedBytes / fileProgress.elapsedSeconds / 1e6).toFixed(3)} MB/s` : 'measuring'} · {fileProgress.verifiedBytes ? 'SHA-256 verified' : fileProgress.blocks < fileProgress.totalBlocks ? 'receiving missing blocks; SHA-256 starts when all are stored' : 'all blocks stored; checking local SHA-256'}</p></div>}
     {profile.colorMode === 'rgb' && status.recovery !== 'none' && <p>RGB optical correction used: {status.recovery}</p>}
     {cameraSettings && <p>Camera configured {cameraSettings.width}×{cameraSettings.height} at {cameraSettings.configuredFps || 'unknown'} FPS · exposure {cameraSettings.exposureMode}{cameraSettings.exposureTime !== null ? ` (${cameraSettings.exposureTime} × 100 µs)` : ''} · focus {cameraSettings.focusMode}. {cameraSettings.canShortenExposure && cameraSettings.exposureMode !== 'manual' && <button onClick={() => void changeExposure(true)}>Try short exposure (experimental)</button>}{cameraSettings.exposureMode === 'manual' && cameraSettings.canRestoreAuto && <button onClick={() => void changeExposure(false)}>Restore automatic exposure</button>} {cameraControlStatus}</p>}
     {task === 'file' && <p>Optical payload: {opticalRecovery.payloadBytes || 'unknown'} bytes · last readable header frame {opticalRecovery.headerFrame < 0 ? '—' : opticalRecovery.headerFrame} · repeat candidates {opticalRecovery.candidates} · CRC-verified temporal recoveries {opticalRecovery.recovered}</p>}

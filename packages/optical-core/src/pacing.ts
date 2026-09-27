@@ -23,6 +23,7 @@ export interface OpticalPaceWindow {
   uniqueFrames: number
   usefulShards: number
   usefulShardBytes: number
+  recoveredBlocks?: number
   storedBytes: number
   observedSenderFps: number
   spanSeconds: number
@@ -47,12 +48,13 @@ export class AdaptiveOpticalPace {
   }
 
   update(window: OpticalPaceWindow, now: number) {
-    const { processedFrames, validFrames, uniqueFrames, usefulShards, usefulShardBytes, storedBytes, observedSenderFps, spanSeconds } = window
-    if (![now, spanSeconds, usefulShards, usefulShardBytes, storedBytes, observedSenderFps].every(Number.isFinite) || spanSeconds < 4 || processedFrames < 3 || validFrames < 0 || validFrames > processedFrames || uniqueFrames < 0 || uniqueFrames > validFrames || usefulShards < 0 || usefulShardBytes < 0 || storedBytes < 0 || observedSenderFps < 0) return this.currentCode
-    if (!this.nextDownProbeAt) this.nextDownProbeAt = now + 30000
+    const { processedFrames, validFrames, uniqueFrames, usefulShards, usefulShardBytes, recoveredBlocks, storedBytes, observedSenderFps, spanSeconds } = window
+    if (![now, spanSeconds, usefulShards, usefulShardBytes, storedBytes, observedSenderFps].every(Number.isFinite) || spanSeconds < 4 || processedFrames < 3 || validFrames < 0 || validFrames > processedFrames || uniqueFrames < 0 || uniqueFrames > validFrames || usefulShards < 0 || usefulShardBytes < 0 || storedBytes < 0 || observedSenderFps < 0 || (recoveredBlocks !== undefined && (!Number.isInteger(recoveredBlocks) || recoveredBlocks < 0))) return this.currentCode
+    if (!this.nextDownProbeAt) this.nextDownProbeAt = now + 10000
     // Completed ZIP bytes are the objective; fresh FEC shards are a leading
     // signal while the next eight-shard block is still being assembled.
-    const goodput = (storedBytes + usefulShardBytes * 0.25) / spanSeconds
+    const stranded = recoveredBlocks === 0 && usefulShards >= 16
+    const goodput = (storedBytes + (stranded ? 0 : usefulShardBytes * 0.25)) / spanSeconds
     if (this.probe) {
       const probe = this.probe
       const midpoint = (opticalPaceFps(this.currentCode) + opticalPaceFps(probe.previousCode)) / 2
@@ -78,14 +80,14 @@ export class AdaptiveOpticalPace {
       // as a stall merely because a FEC block has not completed yet.
       this.currentCode -= 1
       this.lastChangeAt = now
-    } else if (now >= this.nextDownProbeAt && this.currentCode > 1 && observedSenderFps > 0 && usefulShards / spanSeconds < observedSenderFps * 0.2 && processedFrames - validFrames > validFrames && (this.currentCode - 1 !== this.rejectedCode || now >= this.retryRejectedAt)) {
+    } else if (now >= this.nextDownProbeAt && this.currentCode > 1 && observedSenderFps > 0 && (stranded || (recoveredBlocks === undefined && usefulShards / spanSeconds < observedSenderFps * 0.2 && processedFrames - validFrames > validFrames)) && (this.currentCode - 1 !== this.rejectedCode || now >= this.retryRejectedAt)) {
       // A lossy fast link may still win. Try one slower rate, keep it only if
       // productive bytes per second actually improve by more than 10%.
       this.probe = { previousCode: this.currentCode, baselineBytesPerSecond: goodput, requestedAt: now, observedAt: null }
       this.currentCode -= 1
       this.lastChangeAt = now
       this.nextDownProbeAt = now + 30000
-    } else if (validFrames >= 3 && uniqueFrames >= 2 && (usefulShardBytes > 0 || validFrames / processedFrames >= 0.5) && this.currentCode < this.maxCode) {
+    } else if (!stranded && validFrames >= 3 && uniqueFrames >= 2 && (usefulShardBytes > 0 || validFrames / processedFrames >= 0.5) && this.currentCode < this.maxCode) {
       // At 1–2 FPS a repeated shard can make useful bytes appear stalled even
       // though the camera is decoding clean frames. Probe a substantially
       // faster rate, then retain it only if sender FPS and goodput confirm it.

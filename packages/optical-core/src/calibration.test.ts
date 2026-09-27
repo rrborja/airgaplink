@@ -1,5 +1,5 @@
 import { DEBUG_PROFILE, decodeOpticalCells, deterministicPayload, encodeOpticalFrame } from './index.ts'
-import { CALIBRATION_END_STAGE, calibrationFrameId, calibrationRates, readCalibrationFrameId, selectCalibratedPaceCode } from './calibration.ts'
+import { CALIBRATION_END_STAGE, calibrationFrameId, calibrationRates, countRecoverableCalibrationVisits, readCalibrationFrameId, selectCalibratedPaceCode } from './calibration.ts'
 import { AdaptiveOpticalPace, opticalPaceFps, recommendOpticalPaceCode } from './pacing.ts'
 
 const rates = calibrationRates(DEBUG_PROFILE)
@@ -22,6 +22,15 @@ fastStage.set(4, { firstSequence: 0, lastSequence: 74, uniqueFrames: 15, distinc
 if (opticalPaceFps(selectCalibratedPaceCode(DEBUG_PROFILE, fastStage)) !== 30) throw new Error('Calibration rejected higher absolute throughput at 30 FPS because of frame loss')
 fastStage.set(4, { firstSequence: 0, lastSequence: 74, uniqueFrames: 18, distinctShards: 2, spanMs: 2700 })
 if (opticalPaceFps(selectCalibratedPaceCode(DEBUG_PROFILE, fastStage)) !== 4) throw new Error('Calibration mistook repeated FEC shards for useful throughput')
+if (countRecoverableCalibrationVisits(new Set([0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12])) !== 1) throw new Error('Eight distinct shards should recover one encrypted visit')
+if (countRecoverableCalibrationVisits(new Set([0, 1, 2, 3, 10, 11, 12, 13])) !== 0) throw new Error('Shards from separate visits were incorrectly combined')
+const incompleteFast = new Map(fastStage)
+incompleteFast.set(4, { firstSequence: 0, lastSequence: 74, uniqueFrames: 25, distinctShards: 10, spanMs: 2700, recoverableVisits: 0 })
+if (opticalPaceFps(selectCalibratedPaceCode(DEBUG_PROFILE, incompleteFast)) !== 4) throw new Error('Calibration selected fast fragments that cannot complete a block')
+incompleteFast.set(4, { ...incompleteFast.get(4)!, recoverableVisits: 3 })
+if (opticalPaceFps(selectCalibratedPaceCode(DEBUG_PROFILE, incompleteFast)) !== 4) throw new Error('Calibration compared incompatible legacy and visit-throughput scores')
+const visitSamples = new Map([[1, { firstSequence: 0, lastSequence: 11, uniqueFrames: 10, distinctShards: 8, spanMs: 2600, recoverableVisits: 1 }], [4, { firstSequence: 0, lastSequence: 74, uniqueFrames: 25, distinctShards: 10, spanMs: 2700, recoverableVisits: 3 }]])
+if (opticalPaceFps(selectCalibratedPaceCode(DEBUG_PROFILE, visitSamples)) !== 30) throw new Error('Calibration did not select higher recovered-block throughput')
 if (opticalPaceFps(selectCalibratedPaceCode(DEBUG_PROFILE, new Map())) !== 1) throw new Error('Calibration did not fall back safely')
 if (opticalPaceFps(recommendOpticalPaceCode(DEBUG_PROFILE, 3.8, 3.5)) !== 3) throw new Error('Audio pace did not respect measured processed FPS')
 const adaptive = new AdaptiveOpticalPace(DEBUG_PROFILE, 1)
@@ -37,6 +46,11 @@ if (cleanLowFps.update(window(0, 2, 10, 9, 8), 5000) !== 4 || cleanLowFps.update
 const fastWithErrors = new AdaptiveOpticalPace(DEBUG_PROFILE, 13) // 30 FPS
 if (fastWithErrors.update(window(16000, 30, 40, 16, 16), 10000) !== 13) throw new Error('High invalid percentage incorrectly lowered a faster productive link')
 if (fastWithErrors.update(window(0, 30, 40, 0, 0), 20000) !== 12) throw new Error('Genuine zero-progress stall did not back off')
+const strandedFast = new AdaptiveOpticalPace(DEBUG_PROFILE, 13)
+const incompleteBlocks = { ...window(16000, 30, 40, 16, 16), recoveredBlocks: 0 }
+if (strandedFast.update(incompleteBlocks, 5000) !== 13 || strandedFast.update(incompleteBlocks, 16000) !== 12) throw new Error('Readable shards without any recoverable block did not trigger a slower probe')
+const productiveFast = new AdaptiveOpticalPace(DEBUG_PROFILE, 13)
+if (productiveFast.update({ ...incompleteBlocks, recoveredBlocks: 2, storedBytes: 4000 }, 5000) !== 13 || productiveFast.update({ ...incompleteBlocks, recoveredBlocks: 2, storedBytes: 4000 }, 16000) !== 13) throw new Error('Productive fast block recovery was slowed by invalid frames')
 const testDownProbe = new AdaptiveOpticalPace(DEBUG_PROFILE, 13)
 const lossyFast = { ...window(16000, 30, 40, 16, 16), usefulShards: 4 }
 if (testDownProbe.update(lossyFast, 10000) !== 13 || testDownProbe.update(lossyFast, 40000) !== 12) throw new Error('Lossy fast link did not wait before testing one slower rate')
