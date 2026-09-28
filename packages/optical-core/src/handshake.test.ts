@@ -1,5 +1,6 @@
-import { AcousticFragmentReassembler, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, OpticalBlockEncryptor, aesGcmDecrypt, aesGcmEncrypt, canonicalTranscript, compactReadyNegotiated, decodeFskSamples, decodeOctalFskSamples, decodeOpticalCells, decodeQuadFskHandshakeSamples, decodeHandshakeResponse, decodeKeyConfirm, decodeReadyConfirm, deriveHandshakeMaterial, encodeFskPacket, encodeOctalFskHandshakePacket, encodeOpticalFrame, encodeQuadFskHandshakePacket, encodeHandshakeResponse, encodeKeyConfirmAudioMode, encodeReadyConfirm, encodeReadyConfirmCompact, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeOffer, makeResponse, opticalNonce, readyConfirm, readyConfirmCompact, responseToneCount, runtimeToneAllowed, runtimeToneCount, signIdentity, verifyIdentity, verifyReadyConfirm, x25519SharedSecret, generateIdentityKeyPair, equalBytes } from './index.ts'
+import { AcousticFragmentReassembler, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_MANIFEST_READY, HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_SPARSE_STREAM, OpticalBlockEncryptor, aesGcmDecrypt, aesGcmEncrypt, canonicalTranscript, compactReadyNegotiated, decodeFskSamples, decodeOctalFskSamples, decodeOpticalCells, decodeQuadFskHandshakeSamples, decodeHandshakeResponse, decodeKeyConfirm, decodeReadyConfirm, deriveHandshakeMaterial, encodeFskPacket, encodeOctalFskHandshakePacket, encodeOpticalFrame, encodeQuadFskHandshakePacket, encodeHandshakeResponse, encodeKeyConfirmAudioMode, encodeReadyConfirm, encodeReadyConfirmCompact, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeOffer, makeResponse, opticalNonce, readyConfirm, readyConfirmCompact, responseToneCount, runtimeToneAllowed, runtimeToneCount, signIdentity, verifyIdentity, verifyReadyConfirm, x25519SharedSecret, generateIdentityKeyPair, equalBytes } from './index.ts'
 import { FastReadyAssembler, FSK_SYMBOL_SECONDS, HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_FAST_READY, OCTAL_FAST_SYMBOL_SECONDS, encodeOctalFskPacket, fastReadyNegotiated, fastReadyPackets as makeFastReadyPackets, octalSymbolSeconds, readyConfirmFast, rotateHandshakePackets } from './index.ts'
+import { HANDSHAKE_CAPABILITY_RECEIVER_PROFILE, agreedOpticalProfileId, decodeHandshakeOffer, encodeHandshakeOffer } from './index.ts'
 
 const sender = generateEphemeralKeyPair(), receiver = generateEphemeralKeyPair(), another = generateEphemeralKeyPair()
 const sharedSender = x25519SharedSecret(sender.privateKey, receiver.publicKey), sharedReceiver = x25519SharedSecret(receiver.privateKey, sender.publicKey)
@@ -41,6 +42,32 @@ const fastOffer = makeOffer(sender, HANDSHAKE_CAPABILITY_QUAD_FSK), fastResponse
 if (fastResponse.capabilities !== HANDSHAKE_CAPABILITY_QUAD_FSK || deriveHandshakeMaterial(fastOffer, fastResponse, sender.privateKey).sas !== deriveHandshakeMaterial(fastOffer, fastResponse, receiver.privateKey, 'receiver').sas) throw new Error('Four-tone capability was not transcript-bound')
 const runtimeOffer = makeOffer(sender, HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL)
 const runtimeResponse = makeResponse(runtimeOffer, receiver, 1, runtimeOffer.capabilities & (HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL))
+const manifestOffer = makeOffer(sender, HANDSHAKE_CAPABILITY_SPARSE_STREAM | HANDSHAKE_CAPABILITY_MANIFEST_READY)
+const manifestResponse = makeResponse(manifestOffer, receiver, 1, manifestOffer.capabilities)
+const oldManifestResponse = makeResponse(manifestOffer, receiver, 1, HANDSHAKE_CAPABILITY_SPARSE_STREAM)
+if (!equalBytes(deriveHandshakeMaterial(manifestOffer, manifestResponse, sender.privateKey).transcriptHash, deriveHandshakeMaterial(manifestOffer, manifestResponse, receiver.privateKey, 'receiver').transcriptHash) || oldManifestResponse.capabilities & HANDSHAKE_CAPABILITY_MANIFEST_READY) throw new Error('Manifest-ready capability was not transcript-bound or compatible with an older receiver')
+const phoneSafeOffer = makeOffer(sender, HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS)
+const phoneSafeResponse = makeResponse(phoneSafeOffer, receiver, 1, HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS)
+const desktopResponse = makeResponse(phoneSafeOffer, receiver, 1, 0)
+const phoneSafeMaterial = deriveHandshakeMaterial(phoneSafeOffer, phoneSafeResponse, sender.privateKey)
+if (!equalBytes(phoneSafeMaterial.transcriptHash, deriveHandshakeMaterial(phoneSafeOffer, phoneSafeResponse, receiver.privateKey, 'receiver').transcriptHash) || equalBytes(phoneSafeMaterial.transcriptHash, deriveHandshakeMaterial(phoneSafeOffer, desktopResponse, sender.privateKey).transcriptHash)) throw new Error('Phone-safe shard negotiation was not transcript-bound')
+let acceptedPhoneSafeDowngrade = false
+try { deriveHandshakeMaterial(phoneSafeOffer, { ...phoneSafeResponse, capabilities: 0 }, sender.privateKey); acceptedPhoneSafeDowngrade = true } catch { /* expected */ }
+if (acceptedPhoneSafeDowngrade) throw new Error('Phone-safe shard capability was silently downgraded')
+const profileOffer = makeOffer(sender, HANDSHAKE_CAPABILITY_RECEIVER_PROFILE)
+const profileResponse = makeResponse(profileOffer, receiver, 7, HANDSHAKE_CAPABILITY_RECEIVER_PROFILE)
+if (decodeHandshakeOffer(encodeHandshakeOffer(profileOffer))?.capabilities !== HANDSHAKE_CAPABILITY_RECEIVER_PROFILE || decodeHandshakeResponse(encodeHandshakeResponse(profileResponse))?.profileId !== 7) throw new Error('Receiver-profile capability or selection failed binary codec round trip')
+if (agreedOpticalProfileId(profileOffer.capabilities, profileResponse.capabilities, 8, profileResponse.profileId) !== 7) throw new Error('Sender did not accept the negotiated safer optical profile')
+if (equalBytes(deriveHandshakeMaterial(profileOffer, profileResponse, sender.privateKey).transcriptHash, deriveHandshakeMaterial(profileOffer, makeResponse(profileOffer, receiver, 8, HANDSHAKE_CAPABILITY_RECEIVER_PROFILE), sender.privateKey).transcriptHash)) throw new Error('Negotiated optical profile did not bind the transcript')
+let tamperedProfileAccepted = false
+try { deriveHandshakeMaterial(profileOffer, { ...profileResponse, profileId: 8 }, sender.privateKey); tamperedProfileAccepted = true } catch { /* expected */ }
+if (tamperedProfileAccepted) throw new Error('Tampered receiver profile passed transcript binding')
+let legacyProfileAccepted = false
+try { agreedOpticalProfileId(0, 0, 8, 7); legacyProfileAccepted = true } catch { /* expected */ }
+if (legacyProfileAccepted) throw new Error('Legacy peer silently changed optical profile')
+let unofferedProfileAccepted = false
+try { agreedOpticalProfileId(0, HANDSHAKE_CAPABILITY_RECEIVER_PROFILE, 8, 7); unofferedProfileAccepted = true } catch { /* expected */ }
+if (unofferedProfileAccepted) throw new Error('Unoffered receiver profile override was accepted')
 if (runtimeResponse.capabilities !== 6 || deriveHandshakeMaterial(runtimeOffer, runtimeResponse, sender.privateKey).sas !== deriveHandshakeMaterial(runtimeOffer, runtimeResponse, receiver.privateKey, 'receiver').sas) throw new Error('Runtime four-tone capability was not negotiated and transcript-bound')
 const oldReceiverResponse = makeResponse(runtimeOffer, receiver, 1, runtimeOffer.capabilities & HANDSHAKE_CAPABILITY_QUAD_FSK)
 if (oldReceiverResponse.capabilities & HANDSHAKE_CAPABILITY_QUAD_CONTROL) throw new Error('Older receiver incorrectly negotiated four-tone runtime ACK')

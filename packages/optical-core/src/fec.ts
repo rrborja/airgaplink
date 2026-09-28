@@ -1,5 +1,6 @@
-/** Reed–Solomon erasure blocks for the local optical path. The WASM engine is
- * supplied by the browser or test harness; no encoded file bytes enter APIs. */
+/** Reed–Solomon erasure blocks for the optical path. The WASM engine is
+ * supplied by the browser or test harness; phone capture may relay recovered
+ * encrypted blocks locally, but no plaintext enters the relay. */
 export interface ErasureEngine {
   encode(shards: Uint8Array, dataShards: number, parityShards: number): number
   reconstruct(shards: Uint8Array, dataShards: number, parityShards: number, available: boolean[]): number

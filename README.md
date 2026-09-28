@@ -26,11 +26,11 @@ The sender can choose **Transfer files** or **Link benchmark**. The receiver has
 - a data grid with one of eight manually selectable profiles: 100×60 binary, 200×120 binary, 240×120 wide binary, 320×180 dense binary, 300×180 four-level gray, 400×240 four-level gray, 300×180 RGB + black, or 200×120 RGB + black; and
 - CRC16 header validation and CRC32 payload validation.
 
-The sender renders through WebGL2 when available, with Canvas 2D fallback. The receiver captures camera frames into a worker, tracks the quadrilateral, samples symbol centres, and exports diagnostic metrics as JSON. A worker WebGL2 sampler is attempted and used only after it produces a CRC-valid camera frame; otherwise the measured Canvas path remains active. File mode makes a local ZIP and sends eight source plus two Reed–Solomon repair symbols per block. Updated audio-paired peers cycle every block continuously; legacy peers retain ACK-based scheduling. By default the sender constructs a ZIP in STORE mode directly from the selected files, reads it in small ranges, and avoids an archive-sized memory buffer. This supports archives below 4 GiB but does not compress them. Compressed staging on browser-private disk remains an optional mode where available. The receiver writes recovered blocks to browser-private disk or IndexedDB when available and offers a ZIP download only after its SHA-256 matches the sender's manifest. No file or camera bytes are passed to a network API.
+The sender renders through WebGL2 when available, with Canvas 2D fallback. The receiver captures camera frames into a worker, tracks the quadrilateral, samples symbol centres, and exports diagnostic metrics as JSON. A worker WebGL2 sampler is attempted and used only after it produces a CRC-valid camera frame; otherwise the measured Canvas path remains active. File mode makes a local ZIP and sends eight source plus two Reed–Solomon repair symbols per block. Updated audio-paired peers cycle every block continuously; legacy peers retain ACK-based scheduling. By default the sender constructs a ZIP in STORE mode directly from the selected files, reads it in small ranges, and avoids an archive-sized memory buffer. This supports archives below 4 GiB but does not compress them. Compressed staging on browser-private disk remains an optional mode where available. The receiver writes recovered blocks to browser-private disk or IndexedDB when available and offers a ZIP download only after its SHA-256 matches the sender's manifest. Optical file bytes are not sent to sender-api or receiver-api; the optional authenticated phone-camera relay carries camera images only when direct WebRTC video is unavailable.
 
 In fullscreen, the sender fits the frame into the available stage after reserving only the space actually occupied by pairing status and SAS controls. Enlarging an existing grid makes its cells easier to photograph but does **not** increase bytes per frame. The opt-in **240×120 wide binary** profile uses side space on a widescreen display for 20% more data cells than 200×120, while keeping the same 120-row vertical density and three copies of each optical symbol. Its 1,200-byte optical packet contains a 1,184-byte FEC shard and fills the data grid exactly; the nominal useful source-shard ceiling is 28,416 bytes/s at 30 distinct valid FPS versus 23,616 bytes/s for 200×120. Actual transfer goodput depends on camera framing and CRC-valid delivery, so compare the receiver's stored-ZIP KB/s before preferring it. Select 240×120 on **both** devices; its appended profile ID 7 is rejected safely by older builds. QR Compatibility Mode is unchanged.
 
-The optional **320×180 dense binary** profile halves neither color contrast nor FEC: it keeps black/white cells, three complete spatial copies, and eight source plus two repair shards. Its data grid has exactly twice as many cells as 240×120, allowing a 2,400-byte optical packet and a 2,384-byte legacy FEC shard (2,380 bytes with the secure cyclic visit header). The nominal 30-valid-FPS source-shard ceiling is 57,216 bytes/s, about 2× the 240×120 profile; this is **not** a measured transfer rate. Smaller cells may lower CRC-valid FPS enough to erase that gain. Use the receiver's camera-pixels-per-cell and stored-ZIP KB/s diagnostics, and return both devices to 240×120 if decoding degrades. Synthetic 3- and 4-pixel-per-cell tests pass, but physical camera/display validation remains necessary. The profile is appended as ID 8, so existing profile numbers do not change and older builds fail safely on a mismatch. Both devices must select 320×180 and load the updated assets; QR Compatibility Mode is unchanged.
+The optional **320×180 dense binary** profile halves neither color contrast nor FEC: it keeps black/white cells, three complete spatial copies, and eight source plus two repair shards. Its data grid has exactly twice as many cells as 240×120, allowing a 2,400-byte optical packet and a 2,384-byte legacy FEC shard (2,380 bytes with the secure cyclic visit header) with a desktop camera. When the receiver negotiates phone capture, the same grid uses a conservative 784-byte FEC shard (780 bytes with the cyclic visit header) instead: the live 1080p phone relay read small handshake packets but rejected full-grid encrypted shards at payload CRC. The phone-safe choice is included in the authenticated handshake transcript, so peers cannot silently disagree about it. This is a reliability fallback, not a measured throughput improvement; more shards are needed per ZIP. Use the receiver's camera-pixels-per-cell and stored-ZIP KB/s diagnostics, and return both devices to 240×120 if decoding still degrades. The profile is appended as ID 8, so existing profile numbers do not change and older builds fail safely on a mismatch. Both devices must select 320×180 and load the updated assets; QR Compatibility Mode is unchanged.
 
 The **RGB + black** profiles are experimental alternatives to the failing gray-level camera read: each two-bit payload symbol is exactly black, red, green, or blue. Each symbol occupies a 2×2 group of same-color physical cells; the reader samples the center of that group from the camera's full-resolution RGB image. This lowers density but reduces LCD-subpixel/Bayer color aliasing observed in the physical 200×120 test. Unused payload macrocells use a deterministic non-periodic color pattern. Color-reference rails at both edges of every data row let the reader account for camera white balance and illumination. The finder and metadata bands stay black/white for acquisition. Select the same profile on both devices; each has a distinct optical profile number, so older builds cannot pair with it. RGB carries two bits per macrocell, not additional bandwidth over four-level gray. The 200×120 option uses larger camera pixels per cell at the cost of lower per-frame capacity. Both require an RGB camera pixel path; the new macrocell layout still needs physical validation.
 
@@ -102,7 +102,17 @@ The sender's optional **Experimental OFDM audio** setting advertises `OFDM` (`0x
 
 After establishment, the negotiated `SPARSE_STREAM` capability (`0x2000`) changes secure file transfer to a continuous cyclic data plane. The sender visits blocks `0..totalBlocks-1` repeatedly, never waiting for a per-block ACK. It emits eight source and two Reed–Solomon repair symbols per visit. The receiver accepts blocks out of order, reconstructs up to two missing shards within a visit, ignores duplicate completed blocks, and marks a block received only after its local storage write resolves. Sparse mode is negotiated only when IndexedDB has passed a local storage probe: its committed per-block records are the durable sparse receipt map; the in-memory bitmap mirrors those committed records for scheduling and UI. If IndexedDB is unavailable, peers use the legacy mode rather than silently treating volatile memory as durable storage. The receiver starts final SHA-256 verification only after every logical block is stored. A SHA-256 mismatch never emits completion.
 
-For sparse encrypted transfers, each block visit gets a distinct 32-bit counter in version-2 optical symbol headers. Each visit encrypts the plaintext with AES-256-GCM *before* FEC, using `sessionBindingKey[0..3] || blockId:uint32be || visit:uint32be` as its 96-bit nonce. The authenticated additional data binds the protocol, full cryptographic session ID, compact transfer ID, block ID, frame type, and visit counter. Shards from different visits are never mixed. FEC first recovers the exact ciphertext and tag, then GCM authenticates it; a failed visit is discarded so later cycles can repair it. Counter exhaustion fails closed. Older peers lacking `SPARSE_STREAM` keep the legacy ACK-window and cached-ciphertext format with its original nonce construction. Direct optical and QR Compatibility Mode retain their existing behavior.
+For sparse encrypted transfers, each block visit gets a distinct 32-bit counter in version-2 optical symbol headers. Each visit encrypts the plaintext with AES-256-GCM *before* FEC, using `sessionBindingKey[0..3] || blockId:uint32be || visit:uint32be` as its 96-bit nonce. The authenticated additional data binds the protocol, full cryptographic session ID, compact transfer ID, block ID, frame type, and visit counter. Shards from different visits are never mixed. FEC first recovers the exact ciphertext and tag, then GCM authenticates it; a failed visit is discarded so later cycles can repair it. Counter exhaustion fails closed. With the additional transcript-bound `MANIFEST_READY` capability, calibration may finish before the manifest is recovered, but the sender keeps displaying encrypted block zero until the receiver has authenticated and durably stored it. The receiver repeats a normal 12-byte HMAC `MANIFEST_READY` audio control, alternating with calibration selection, and only a verified tag releases the sender's continuous file stream. This one-time prerequisite does not gate later blocks on ACKs. Older peers lacking `MANIFEST_READY` keep their previous start timing; peers lacking `SPARSE_STREAM` keep the legacy ACK-window and cached-ciphertext format with its original nonce construction. Direct optical and QR Compatibility Mode retain their existing behavior.
+
+### Phone camera as a desktop capture source
+
+In Audio pairing + ACK mode, the desktop receiver can pair a phone camera while keeping all optical processing on the desktop. Run `pnpm dev:receiver-api` and `pnpm serve:receiver-ui` in separate terminals on the desktop, open High-Speed Optical → Receive files → Audio pairing + ACK, enter a **phone-reachable, trusted local HTTPS origin** for the receiver UI, and create the phone pairing QR. Scan it on the phone, then tap Start rear camera; the desktop speaker still needs to be enabled. The QR is encoded as a text URL with a white quiet zone; the full link is also selectable/copyable below it. A session ID alone is not sufficient. The desktop retains the local phone pairing and selected profile across an accidental page reload, though the cryptographic transfer handshake itself must restart. The static receiver server proxies `/api/optical-relay/session` and the `/optical-relay` WebSocket to `receiver-api` on port 3002; a production HTTPS reverse proxy must forward both paths, including WebSocket upgrades. A plain `http://<LAN IP>` page is usually not a secure camera context. The QR carries a random 192-bit, five-minute pairing token in a URL fragment (not an HTTP request target); the phone moves it to session storage and removes it from the address bar. The WebSocket authenticates with the token in its first message and reconnects automatically. Keep this local relay private to your LAN; routing it through an internet tunnel changes the threat and availability model.
+
+The phone page requests a bounded 1080p rear-camera stream for dense binary frames, keeps all four finder corners in view, and encodes each capture as lossless PNG. It sends one frame at a time over the authenticated pairing WebSocket, waiting for a desktop decode acknowledgement before sending the next; duplicate or delayed acknowledgements cannot advance the capture sequence. The phone does no finder search, cell classification, CRC/FEC reconstruction, AES-GCM processing, or block storage. The desktop opens each image in its existing optical worker, applies the normal finder and lens correction, passes CRC-valid frames through the same handshake and block pipeline used by its webcam, and reports the decode result to the phone. This sends compressed camera images over the local relay, so link bandwidth can limit scan FPS. The relay does not receive ephemeral private keys, derived keys, SAS values, filenames, or plaintext. The desktop performs Reed–Solomon reconstruction, verifies AES-256-GCM, writes blocks to its existing sparse map, counts missing blocks, performs final SHA-256 verification, and drives the acoustic response/repair channel from its own speaker. Once phone pairing is enabled, the desktop webcam stays off even through phone reconnects or invalid frames; it resumes only when the user selects Disconnect phone.
+
+For zero valid optical frames, compare the phone's **images sent** counter with **valid on desktop** and **last decode**. If images sent stays zero, inspect the camera or pairing link. If images arrive but decode fails, inspect the desktop finder and CRC status. Keep all four optical corners visible. Sender and desktop receiver must select the same profile; the phone follows the desktop. The 320×180 dense binary profile remains experimental. `payload-crc` means the header was seen but its data cells failed CRC; it is not an AES failure.
+
+The phone image relay does not raise the sender's existing 60-logical-FPS acoustic pacing ceiling. IndexedDB commits partial blocks during an active desktop transfer and survives a phone disconnect; reloading the desktop page does not resume that cryptographic session, because ephemeral keys are intentionally discarded. Phone pairing is a local capture relay, not a replacement for the X25519/HKDF/SAS/key-confirm handshake; a stolen pairing QR/token could disrupt capture until it expires, but cannot forge an AES-GCM-authenticated block. Hands-free SAS continuation remains explicitly peer-identity-unverified.
 
 Optical-rate calibration now scores complete eight-of-ten FEC visits, not just individually readable frames. A fast rate that scatters valid shards across many different encrypted visits cannot win calibration without reconstructing a block. During transfer, the receiver also counts authenticated recovered blocks separately from raw FEC shards: two five-second windows with plentiful shards but no recovered block prompt a slower-rate trial, while a rate producing completed blocks is not slowed merely because other frames fail CRC. The reader first searches near its last CRC-valid finder geometry after a brief loss, then falls back to the full camera scan if that local search cannot restore CRC-valid frames. This reduces unnecessary expensive full-frame reacquisition without relaxing payload CRC, FEC, or AES-GCM checks. A fresh physical run is still needed to measure the gain on a particular display/camera pair.
 
@@ -134,6 +144,55 @@ To try a local optical file transfer:
 
 The compatibility QR transport remains available if this experimental path cannot decode reliably.
 
+### Camera reader regression: rotation and lens distortion
+
+The shared finder now resolves all four grid orientations using the existing
+CRC-checked optical header; four symmetric corner markers alone cannot establish
+orientation. For binary frames with a valid header but failed payload CRC, a
+bounded sampler calibrates small radial lens distortion and sub-cell offsets.
+Only CRC-valid payloads are returned, and successful calibration is cached for
+subsequent frames and preserved during nearby motion tracking. The same desktop
+optical worker decodes both its local webcam and the phone's remote camera;
+the phone does not classify cells or validate optical frames. The GPU homography falls back to the calibrated CPU
+sampler when necessary. Handshake authentication, AES-GCM, FEC, and the wire format
+are unchanged.
+
+`camera-photo.test.ts` replays the camera-only crops of `IMG_9790.PNG` and
+`IMG_9791.PNG`. It tests all four orientations, checks their complete 73-byte
+offers, exercises cached reads, and rejects an incorrect payload CRC. The phone
+keeps a fixed camera field of view because automatic zoom after CRC failures
+could discard a required finder corner. Dense binary frames use the canvas
+RGBA path on iPhone so their samples match the visible camera preview. Local
+Mac replay measured roughly 0.3–0.6 s
+for initial acquisition and 1–5 ms per cached decode; these are not live iPhone
+camera or end-to-end transfer measurements. Severe blur, clipping, or insufficient
+resolved pixels can still prevent decoding.
+
+### Phone as a remote webcam
+
+After QR pairing, the phone requests a rear-camera mode up to 2560×1440 at
+60 FPS (then 30 FPS and lower-resolution fallbacks) and sends its camera track
+to the desktop over a direct WebRTC connection. The authenticated WebSocket
+relay carries only bounded SDP/ICE signaling; `iceServers: []` keeps the video
+path on the local peer-to-peer network. The desktop uses the *same* optical
+worker and block collector as its built-in webcam. Its frame callback samples
+the newest video image whenever that worker is free, dropping intermediate
+captures rather than building a stale queue. A 60 FPS capture or stream does
+not imply 60 CRC-valid optical decodes per second; the displayed decode rate
+must be measured separately. The experimental 320×180 dense grid uses lossless
+PNG camera images from the outset: Safari's compressed WebRTC track can keep
+the finder visible while corrupting enough small cells to fail payload CRC.
+For other profiles, eight consecutive WebRTC decode failures cause the desktop
+to request lossless PNG capture automatically. The fallback sends camera images through
+the configured relay, so a public tunnel is not a private/offline video path.
+With current peers, a paired phone receiving a 320×180 offer selects the more
+readable 240×120 binary profile in its acoustic handshake response. The sender
+switches before optical key confirmation or archive preparation; the chosen
+profile is included in the authenticated transcript and displayed by both UIs.
+Older peers do not negotiate receiver-selected profiles and must still be set
+to the same profile manually. This fallback favors a decodable transfer over
+the experimental dense profile's higher nominal cell count.
+
 ## Transfer protocol
 
 1. The receiver opens the receiver UI and shares its eight-character session code with the sender.
@@ -158,10 +217,17 @@ For the offline-capable sender, build and serve the static UI:
 ```bash
 pnpm --filter sender-ui build
 pnpm serve:sender-ui      # static sender UI, port 5173
-pnpm dev:receiver-ui      # receiver UI, port 5174
+pnpm serve:receiver-ui    # static receiver UI, port 5174; stable phone scans
 ```
 
 The static sender serves build assets with ordinary finite HTTP responses. Its `/api` proxy is used only by QR Compatibility Mode. After the High-Speed page shows **Offline ready**, you can disconnect the sender's Wi-Fi, Ethernet, and Bluetooth while leaving the page open. `pnpm dev:sender-ui` also builds and serves this static UI; Vite's hot-reload server is available only through the explicit `pnpm --filter sender-ui dev:vite` command. Other development services remain:
+
+Use the static receiver server for phone scans. Its pairing API and WebSocket
+relay remain proxied to `receiver-api`, but it does not inject Vite's live reload
+client. A reconnecting Vite socket can otherwise reload a tunneled phone page
+and stop the camera during a scan. Rebuild and manually reload the receiver
+after edits. The development server disables hot reload by default; set
+`RECEIVER_HMR=true` only for local development where page reloads are acceptable.
 
 ```bash
 pnpm dev:sender-api      # short-code metadata/control service, port 3001

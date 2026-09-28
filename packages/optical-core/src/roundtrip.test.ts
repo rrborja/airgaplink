@@ -1,4 +1,6 @@
-import { BINARY_200_REPEATED_MAX_BYTES, BINARY_PROFILE, DEBUG_PROFILE, DENSE_BINARY_PROFILE, GRAY4_PROFILE, RGB4_200_PROFILE, RGB4_PROFILE, RGB_BOOTSTRAP_FRAME_TAG, TARGET_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, calibrationFrameId, decodeOpticalCells, decodeOpticalImage, detectOpticalBoundaryNear, deterministicPayload, encodeOpticalFrame, framePayloadCapacity, isDeterministicPayload, opticalProfileNumber, rasterizeOpticalCells, sampleOpticalCells } from './index.ts'
+import { BINARY_200_REPEATED_MAX_BYTES, BINARY_PROFILE, DEBUG_PROFILE, DENSE_BINARY_PROFILE, GRAY4_PROFILE, RGB4_200_PROFILE, RGB4_PROFILE, RGB_BOOTSTRAP_FRAME_TAG, TARGET_PROFILE, WIDE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, calibrationFrameId, crc32, decodeOpticalCells, decodeOpticalImage, detectOpticalBoundary, detectOpticalBoundaryNear, deterministicPayload, encodeOpticalFrame, framePayloadCapacity, isDeterministicPayload, opticalProfileNumber, rasterizeOpticalCells, sampleOpticalCells } from './index.ts'
+
+if (crc32(new TextEncoder().encode('123456789')) !== 0xcbf43926) throw new Error('CRC-32/ISO-HDLC standard test vector failed')
 
 const payload = deterministicPayload(42, framePayloadCapacity(DEBUG_PROFILE))
 const encoded = encodeOpticalFrame(payload, 42, 7)
@@ -34,6 +36,29 @@ const movedBoundary = cameraDecoded.boundary && Object.fromEntries(Object.entrie
 const nearbyBoundary = movedBoundary && detectOpticalBoundaryNear({ data: camera, width: cameraWidth, height: cameraHeight }, movedBoundary)
 const nearbyDecoded = nearbyBoundary && decodeOpticalImage({ data: camera, width: cameraWidth, height: cameraHeight }, DEBUG_PROFILE, nearbyBoundary)
 if (!nearbyDecoded?.ok || nearbyDecoded.header.frameId !== 42) throw new Error('Guided finder reacquisition did not recover a shifted camera boundary')
+// A readable but distant/off-center screen need not cross the camera image's
+// midpoint. All four markers here are in the upper-left camera quadrant.
+const smallRaster = rasterizeOpticalCells(encoded, 3)
+const distant = new Uint8ClampedArray(cameraWidth * cameraHeight * 4)
+for (let index = 0; index < distant.length; index += 4) { distant[index] = 70; distant[index + 1] = 70; distant[index + 2] = 70; distant[index + 3] = 255 }
+for (let row = 0; row < smallRaster.height; row += 1) {
+  const source = row * smallRaster.width * 4
+  distant.set(smallRaster.data!.subarray(source, source + smallRaster.width * 4), ((row + 50) * cameraWidth + 70) * 4)
+}
+const distantReport = { stage: 'top-left' }
+const distantBoundary = detectOpticalBoundary({ data: distant, width: cameraWidth, height: cameraHeight }, DEBUG_PROFILE, distantReport)
+const distantDecoded = decodeOpticalImage({ data: distant, width: cameraWidth, height: cameraHeight }, DEBUG_PROFILE, distantBoundary || undefined)
+if (!distantDecoded.ok || distantDecoded.header.frameId !== 42) throw new Error(`Off-center distant frame failed: ${distantDecoded.ok ? 'wrong frame' : distantDecoded.reason} at ${distantReport.stage}, ${JSON.stringify(distantBoundary)}`)
+const smallBinaryFrame = encodeOpticalFrame(deterministicPayload(68, 64), 68, 3, BINARY_PROFILE)
+const smallBinaryRaster = rasterizeOpticalCells(smallBinaryFrame, 2)
+const smallBinaryCamera = new Uint8ClampedArray(distant.length)
+for (let index = 0; index < smallBinaryCamera.length; index += 4) { smallBinaryCamera[index] = 70; smallBinaryCamera[index + 1] = 70; smallBinaryCamera[index + 2] = 70; smallBinaryCamera[index + 3] = 255 }
+for (let row = 0; row < smallBinaryRaster.height; row += 1) {
+  const source = row * smallBinaryRaster.width * 4
+  smallBinaryCamera.set(smallBinaryRaster.data!.subarray(source, source + smallBinaryRaster.width * 4), ((row + 30) * cameraWidth + 40) * 4)
+}
+const smallBinaryDecoded = decodeOpticalImage({ data: smallBinaryCamera, width: cameraWidth, height: cameraHeight }, BINARY_PROFILE)
+if (!smallBinaryDecoded.ok || smallBinaryDecoded.header.frameId !== 68) throw new Error(`Two-pixel distant binary frame failed: ${smallBinaryDecoded.ok ? 'wrong frame' : smallBinaryDecoded.reason}`)
 const softened = new Uint8ClampedArray(camera.length)
 for (let y = 0; y < cameraHeight; y += 1) for (let x = 0; x < cameraWidth; x += 1) {
   let total = 0
@@ -108,6 +133,32 @@ for (let copy = 0; copy < 3; copy += 1) {
 const denseRecovered = decodeOpticalCells(denseCells, DENSE_BINARY_PROFILE)
 if (!denseRecovered.ok || denseRecovered.recovery !== 'majority' || denseRecovered.payload.some((value, index) => value !== densePayload[index])) throw new Error('Dense binary spatial majority failed')
 if (densePayload.length * 8 * 3 !== DENSE_BINARY_PROFILE.gridWidth * DENSE_BINARY_PROFILE.gridHeight) throw new Error('Dense triplicated payload leaves filler bands')
+const densePhonePayload = deterministicPayload(113, 800)
+const densePhoneFrame = encodeOpticalFrame(densePhonePayload, 113, 13, DENSE_BINARY_PROFILE)
+const densePhoneCells = densePhoneFrame.cells.slice()
+const densePhoneFirstBit = densePhoneFrame.cells[16 * densePhoneFrame.width + 16]
+for (let copy = 0; copy < 9; copy += 1) {
+  const position = copy * densePhonePayload.length * 8
+  const cell = (16 + Math.floor(position / DENSE_BINARY_PROFILE.gridWidth)) * densePhoneFrame.width + 16 + position % DENSE_BINARY_PROFILE.gridWidth
+  if (densePhoneCells[cell] !== densePhoneFirstBit) throw new Error('Dense phone-safe payload did not fill nine identical spatial copies')
+  const damagedPosition = position + copy
+  densePhoneCells[(16 + Math.floor(damagedPosition / DENSE_BINARY_PROFILE.gridWidth)) * densePhoneFrame.width + 16 + damagedPosition % DENSE_BINARY_PROFILE.gridWidth] ^= 1
+}
+const densePhoneRecovered = decodeOpticalCells(densePhoneCells, DENSE_BINARY_PROFILE)
+if (!densePhoneRecovered.ok || densePhoneRecovered.recovery !== 'majority' || densePhoneRecovered.payload.some((value, index) => value !== densePhonePayload[index])) throw new Error('Nine-copy dense frame did not recover independently corrupted regions')
+const legacyDenseCells = densePhoneFrame.cells.slice()
+for (let copy = 0; copy < 9; copy++) {
+  const start = copy * densePhonePayload.length * 8
+  if (copy === 0 || copy === 4 || copy === 8) {
+    const position = start + copy
+    legacyDenseCells[(16 + Math.floor(position / DENSE_BINARY_PROFILE.gridWidth)) * densePhoneFrame.width + 16 + position % DENSE_BINARY_PROFILE.gridWidth] ^= 1
+  } else for (let bit = 0; bit < densePhonePayload.length * 8; bit++) {
+    const position = start + bit
+    legacyDenseCells[(16 + Math.floor(position / DENSE_BINARY_PROFILE.gridWidth)) * densePhoneFrame.width + 16 + position % DENSE_BINARY_PROFILE.gridWidth] ^= 1
+  }
+}
+const legacyDenseRecovered = decodeOpticalCells(legacyDenseCells, DENSE_BINARY_PROFILE)
+if (!legacyDenseRecovered.ok || legacyDenseRecovered.recovery !== 'majority' || legacyDenseRecovered.payload.some((value, index) => value !== densePhonePayload[index])) throw new Error('Dense decoder lost legacy three-copy compatibility')
 const grayscaleSource = rasterizeOpticalCells(binaryFrame, 5)
 const grayscale = new Uint8Array(grayscaleSource.width * grayscaleSource.height)
 for (let index = 0; index < grayscale.length; index += 1) grayscale[index] = grayscaleSource.data![index * 4]

@@ -3,8 +3,10 @@ import { prepareZXingModule, readBarcodes } from 'zxing-wasm/reader'
 import readerWasmUrl from 'zxing-wasm/reader/zxing_reader.wasm?url'
 import { DEBUG_PROFILE, TransportMode, decodeOpticalCells, detectOpticalBoundary, frameDimensions, isDeterministicPayload, sampleOpticalCells, type FinderReport, type OpticalBoundary, type OpticalImageDecode, type TransportMode as TransportModeValue } from '@qrcopy/optical-core'
 import { WorkerOpticalReceiver } from './WorkerOpticalReceiver'
+import { PhoneOpticalReceiver, hasPhonePairing } from './PhoneOpticalReceiver'
 
 const RECEIVER_API_URL = import.meta.env.VITE_RECEIVER_API_URL || 'http://localhost:3002'
+const RECEIVER_TRANSPORT_KEY = 'airgaplink-receiver-transport-mode'
 const HEADER_BYTES = 38
 interface SessionStatus { sessionId: string; status: 'waiting' | 'receiving' | 'complete'; receivedChunks: number; totalChunks: number; complete: boolean }
 
@@ -141,8 +143,13 @@ function OpticalHighSpeedReceiver() {
 }
 
 function App() {
-  const [mode, setMode] = useState<TransportModeValue>(TransportMode.QR)
-  return <><nav style={styles.transportNav} aria-label="Transfer mode"><strong>Transfer Mode</strong><button onClick={() => setMode(TransportMode.OPTICAL_HIGH_SPEED)} style={mode === TransportMode.OPTICAL_HIGH_SPEED ? styles.activeMode : styles.modeButton}>High-Speed Optical</button><button onClick={() => setMode(TransportMode.QR)} style={mode === TransportMode.QR ? styles.activeMode : styles.modeButton}>QR Compatibility Mode</button></nav>{mode === TransportMode.QR ? <QrCompatibilityReceiver /> : typeof OffscreenCanvas !== 'undefined' && typeof createImageBitmap === 'function' ? <WorkerOpticalReceiver /> : <OpticalHighSpeedReceiver />}</>
+  if (hasPhonePairing()) return <PhoneOpticalReceiver />
+  const [mode, setMode] = useState<TransportModeValue>(() => {
+    try { return sessionStorage.getItem(RECEIVER_TRANSPORT_KEY) === TransportMode.OPTICAL_HIGH_SPEED ? TransportMode.OPTICAL_HIGH_SPEED : TransportMode.QR }
+    catch { return TransportMode.QR }
+  })
+  const selectMode = (next: TransportModeValue) => { try { sessionStorage.setItem(RECEIVER_TRANSPORT_KEY, next) } catch { /* Mode still changes for this page. */ }; setMode(next) }
+  return <><nav style={styles.transportNav} aria-label="Transfer mode"><strong>Transfer Mode</strong><button onClick={() => selectMode(TransportMode.OPTICAL_HIGH_SPEED)} style={mode === TransportMode.OPTICAL_HIGH_SPEED ? styles.activeMode : styles.modeButton}>High-Speed Optical</button><button onClick={() => selectMode(TransportMode.QR)} style={mode === TransportMode.QR ? styles.activeMode : styles.modeButton}>QR Compatibility Mode</button></nav>{mode === TransportMode.QR ? <QrCompatibilityReceiver /> : typeof OffscreenCanvas !== 'undefined' && typeof createImageBitmap === 'function' ? <WorkerOpticalReceiver /> : <OpticalHighSpeedReceiver />}</>
 }
 
 const styles: Record<string, React.CSSProperties> = { container: { maxWidth: 1120, margin: '40px auto', padding: 20, textAlign: 'center', fontFamily: 'system-ui, sans-serif' }, session: { overflowWrap: 'anywhere', padding: 16, border: '1px solid #0969da', borderRadius: 10, background: '#ddf4ff' }, video: { display: 'block', width: '100%', maxWidth: 800, margin: '20px auto', borderRadius: 10, background: '#111' }, imageInput: { display: 'block', margin: '12px auto', color: '#57606a' }, download: { display: 'inline-block', padding: '12px 18px', color: '#fff', background: '#067647', borderRadius: 6, textDecoration: 'none' }, transportNav: { display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'center', padding: 14, borderBottom: '1px solid #d0d7de', fontFamily: 'system-ui, sans-serif', flexWrap: 'wrap' }, modeButton: { padding: '8px 12px', border: '1px solid #8c959f', borderRadius: 6, background: '#fff', cursor: 'pointer' }, activeMode: { padding: '8px 12px', border: '1px solid #0969da', borderRadius: 6, background: '#ddf4ff', color: '#0550ae', fontWeight: 700, cursor: 'pointer' }, button: { padding: '10px 14px', border: 0, borderRadius: 6, background: '#0969da', color: '#fff', font: 'inherit', cursor: 'pointer' }, opticalLayout: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(280px, 360px)', gap: 20, alignItems: 'start', textAlign: 'left' }, diagnostics: { padding: 18, border: '1px solid #d0d7de', borderRadius: 10, background: '#fff' }, sampleGrid: { width: '100%', imageRendering: 'pixelated', border: '1px solid #8c959f', background: '#fff' } }

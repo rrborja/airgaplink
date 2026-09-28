@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "test": "node --experimental-strip-types src/local-sink.test.ts && node --experimental-strip-types src/indexeddb-sink.test.ts && node --experimental-strip-types src/camera-telemetry.test.ts",
+    "test": "node --experimental-strip-types src/local-sink.test.ts && node --experimental-strip-types src/indexeddb-sink.test.ts && node --experimental-strip-types src/camera-telemetry.test.ts && node --experimental-strip-types src/phone-camera-optics.test.ts && node --experimental-strip-types src/phone-relay.test.ts && node --experimental-strip-types src/phone-image-worker.test.ts",
     "preview": "vite preview",
     "lint": "eslint src --ext ts,tsx",
     "type-check": "tsc --noEmit"
@@ -19,6 +19,7 @@
     "zxing-wasm": "^3.1.4"
   },
   "devDependencies": {
+    "@types/node": "^20.11.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^4.3.4",

@@ -13,6 +13,12 @@ if (decoded.length !== 1 || decoded[0].transferId !== packet.transferId || decod
 const status = readBlockStatusPayload(decoded[0].payload)
 if (!status || status.baseBlock !== 96 || status.bitmap !== 0xf0a20cc3) throw new Error('Acoustic block bitmap changed')
 const sessionId = 0x6135d902
+const manifestTag = Uint8Array.from({ length: 12 }, (_, index) => index * 13)
+const manifestTone = encodeOctalFskPacket({ type: ControlType.MANIFEST_READY, transferId: sessionId, sequence: 19, payload: manifestTag }, 48000)
+const manifestPacket = decodeOctalFskSamples(manifestTone, 48000)
+if (manifestPacket.length !== 1 || manifestPacket[0].type !== ControlType.MANIFEST_READY || manifestPacket[0].sequence !== 19 || manifestPacket[0].payload.some((value, index) => value !== manifestTag[index])) throw new Error('Authenticated manifest-ready control did not survive 8-FSK')
+const brokenManifestTone = manifestTone.slice(); brokenManifestTone.fill(0, Math.floor(brokenManifestTone.length / 3), Math.floor(brokenManifestTone.length * 2 / 3))
+if (decodeOctalFskSamples(brokenManifestTone, 48000).length) throw new Error('Corrupted manifest-ready control passed acoustic CRC')
 const hello = decodeFskSamples(encodeFskPacket({ type: ControlType.HELLO, transferId: sessionId, sequence: 1, payload: new Uint8Array() }, 48000), 48000)
 if (hello.length !== 1 || hello[0].type !== ControlType.HELLO || hello[0].transferId !== sessionId || hello[0].payload.length) throw new Error('Acoustic session HELLO failed')
 const storageHello = decodeFskSamples(encodeFskPacket({ type: ControlType.HELLO, transferId: sessionId, sequence: 3, payload: Uint8Array.of(0) }, 48000), 48000)

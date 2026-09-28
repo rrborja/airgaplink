@@ -9,6 +9,7 @@
     "serve:sender-ui": "pnpm --filter sender-ui serve",
     "dev:sender-api": "pnpm --filter sender-api dev",
     "dev:receiver-ui": "pnpm --filter receiver-ui dev",
+    "serve:receiver-ui": "pnpm --filter receiver-ui preview",
     "dev:receiver-api": "pnpm --filter receiver-api dev",
     "dev": "pnpm run dev:sender-ui && pnpm run dev:sender-api && pnpm run dev:receiver-ui && pnpm run dev:receiver-api",
     "build:all": "pnpm --parallel run build",

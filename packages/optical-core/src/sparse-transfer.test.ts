@@ -7,7 +7,7 @@ import { CyclicOpticalBlockEncryptor, aesGcmDecrypt, cyclicOpticalBlockAad, cycl
 import { OpticalBlockCollector, ReedSolomonBlockCodec, packOpticalSymbol, unpackOpticalSymbol } from './fec.ts'
 import { makeMissingHintPayload, packControlPacket, readMissingHintPayload, unpackControlPacket, ControlType } from './control.ts'
 import { encodeOctalFskPacket, decodeOctalFskSamples } from './octal-fsk.ts'
-import { transferCompletionTag } from './handshake.ts'
+import { manifestReadyTag, transferCompletionTag, verifyManifestReadyTag } from './handshake.ts'
 import { DENSE_BINARY_PROFILE, binaryRepeatedPayloadCapacity, decodeOpticalCells, encodeOpticalFrame } from './index.ts'
 
 const map = new ReceivedBlockMap(); map.configure(66)
@@ -72,6 +72,19 @@ assert.deepEqual(await aesGcmDecrypt(key, cyclicOpticalNonce(prefix, 6, denseCip
 
 const digest = createHash('sha256').update(plain).digest(), transcript = Uint8Array.from({ length: 32 }, (_, i) => 90 + i)
 const complete = transferCompletionTag(key, transcript, digest, 1)
+const manifestReady = manifestReadyTag(key, transcript, digest, 1)
+assert.equal(manifestReady.length, 12)
+assert.equal(verifyManifestReadyTag(key, transcript, digest, 1, manifestReady), true)
+assert.equal(verifyManifestReadyTag(key, transcript, digest, 1, manifestReady.subarray(0, 11)), false)
+const changedManifestTag = manifestReady.slice(); changedManifestTag[0] ^= 1
+assert.equal(verifyManifestReadyTag(key, transcript, digest, 1, changedManifestTag), false)
+assert.equal(verifyManifestReadyTag(key, new Uint8Array(32), digest, 1, manifestReady), false)
+assert.equal(verifyManifestReadyTag(key, transcript, digest, 2, manifestReady), false)
+assert.notDeepEqual(manifestReady, complete)
+assert.notDeepEqual(manifestReady, manifestReadyTag(key, transcript, digest, 2))
+assert.notDeepEqual(manifestReady, manifestReadyTag(key, transcript, createHash('sha256').update('bad').digest(), 1))
+assert.notDeepEqual(manifestReady, manifestReadyTag(key, new Uint8Array(32), digest, 1))
+assert.notDeepEqual(manifestReady, manifestReadyTag(new Uint8Array(32), transcript, digest, 1))
 assert.equal(complete.length, 12)
 assert.notDeepEqual(complete, transferCompletionTag(key, transcript, digest, 2))
 assert.notDeepEqual(complete, transferCompletionTag(key, transcript, createHash('sha256').update('bad').digest(), 1))

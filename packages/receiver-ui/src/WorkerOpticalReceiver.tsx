@@ -1,23 +1,43 @@
 import { useEffect, useRef, useState } from 'react'
 import { ReedSolomonErasure } from '@digitaldefiance/reed-solomon-erasure.wasm/browser'
 import reedSolomonWasmUrl from '@digitaldefiance/reed-solomon-erasure.wasm/wasm?url'
-import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_DENSE_RESPONSE, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_RESPONSE_PARITY, OPTICAL_PROFILES, OpticalBlockCollector, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, aesGcmDecrypt, compactReadyNegotiated, decodeHandshakeNack, decodeHandshakeOffer, decodeKeyConfirm, deriveHandshakeMaterial, encodeHandshakeResponse, encodeReadyConfirm, encodeReadyConfirmCompact, equalBytes, fragmentDenseHandshakeResponse, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeResponse, opticalBlockAad, opticalNonce, calibrationRates, encodeCompactFskPacket, encodeFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, frameDimensions, isDeterministicPayload, makeBlockStatusPayload, makeCompactStatusPayload, opticalPaceFps, opticalProfileNumber, readCalibrationFrameId, responseToneCount, runtimeToneAllowed, selectCalibratedPaceCode, selectHandshakeNackRetransmissions, unpackOpticalSymbol, unpackTransferManifest, readyConfirm, readyConfirmCompact, writeOpticalCellRgba, type AcousticToneCount, type ControlPacket, type HandshakeMaterial, type HandshakeOffer, type OpticalImageDecode, type OpticalProfile, type TransferManifest } from '@qrcopy/optical-core'
+import { prepareZXingModule, writeBarcode } from 'zxing-wasm/writer'
+import writerWasmUrl from 'zxing-wasm/writer/zxing_writer.wasm?url'
+import { AcousticFragmentReassembler, CALIBRATION_END_STAGE, CALIBRATION_STAGE_MS, ControlType, DEBUG_PROFILE, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_DENSE_RESPONSE, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_RESPONSE_PARITY, HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS, OPTICAL_PROFILES, OpticalBlockCollector, PROTOCOL_VERSION, ReedSolomonBlockCodec, TRANSFER_MANIFEST_BYTES, aesGcmDecrypt, compactReadyNegotiated, decodeHandshakeNack, decodeHandshakeOffer, decodeKeyConfirm, deriveHandshakeMaterial, encodeHandshakeResponse, encodeReadyConfirm, encodeReadyConfirmCompact, equalBytes, fragmentDenseHandshakeResponse, fragmentHandshakeMessage, generateEphemeralKeyPair, keyConfirm, keyConfirmAudioMode, makeResponse, opticalBlockAad, opticalNonce, calibrationRates, encodeCompactFskPacket, encodeFskPacket, encodeOctalCompactFskPacket, encodeOctalFskHandshakePacket, encodeOctalFskPacket, encodeQuadCompactFskPacket, encodeQuadFskHandshakePacket, encodeQuadFskPacket, frameDimensions, isDeterministicPayload, makeBlockStatusPayload, makeCompactStatusPayload, opticalPaceFps, opticalProfileNumber, readCalibrationFrameId, responseToneCount, runtimeToneAllowed, selectCalibratedPaceCode, selectHandshakeNackRetransmissions, unpackOpticalSymbol, unpackTransferManifest, readyConfirm, readyConfirmCompact, writeOpticalCellRgba, type AcousticToneCount, type ControlPacket, type HandshakeMaterial, type HandshakeOffer, type OpticalImageDecode, type OpticalProfile, type TransferManifest } from '@qrcopy/optical-core'
 import { HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_FAST_READY, fastReadyNegotiated, fastReadyPackets, octalSymbolSeconds, readyConfirmFast, rotateHandshakePackets } from '@qrcopy/optical-core'
 import { isFreshHandshakeNackRequest } from '@qrcopy/optical-core'
 import { HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO, HANDSHAKE_CAPABILITY_HEX_FSK, HANDSHAKE_CAPABILITY_OFDM, decodeAudioModeSelect, denseHandshakeSessionTag, encodeHexCompactFskPacket, encodeHexFskHandshakePacket, encodeHexFskPacket, encodeOfdmCompactPacket, encodeOfdmHandshakePacket, encodeOfdmPacket } from '@qrcopy/optical-core'
+import { HANDSHAKE_CAPABILITY_RECEIVER_PROFILE } from '@qrcopy/optical-core'
 import { AdaptiveOpticalPace, countRecoverableCalibrationVisits } from '@qrcopy/optical-core'
 import { RGB_BOOTSTRAP_FRAME_TAG, makeOpticalQualityPayload } from '@qrcopy/optical-core'
-import { HANDSHAKE_CAPABILITY_SPARSE_STREAM, ReceivedBlockMap, cyclicOpticalBlockAad, cyclicOpticalNonce, makeMissingHintPayload, transferCompletionTag } from '@qrcopy/optical-core'
+import { HANDSHAKE_CAPABILITY_MANIFEST_READY, HANDSHAKE_CAPABILITY_SPARSE_STREAM, ReceivedBlockMap, cyclicOpticalBlockAad, cyclicOpticalNonce, makeMissingHintPayload, manifestReadyTag, transferCompletionTag } from '@qrcopy/optical-core'
 import { CameraFrameMeter, applyShortExposure, cameraSettingsSummary, restoreAutoExposure, type CameraSettingsSummary } from './camera-telemetry'
 import { LocalOpticalSink } from './local-sink'
 import { IndexedDbOpticalSink } from './indexeddb-sink'
+import { parsePhonePairingHash } from './phone-pairing'
+import { PHONE_CAPTURE_PATHS, PHONE_DECODE_REASONS, decodePhoneRelayMessage, encodePhoneRelayMessage } from './phone-relay-protocol'
 
 type OpticalSink = LocalOpticalSink | IndexedDbOpticalSink
 type StorageMode = 'checking' | 'opfs' | 'indexeddb' | 'memory'
-interface FileReceiveState { id: number | null; collectors: Map<string, OpticalBlockCollector>; blocks: Map<number, Uint8Array>; received: ReceivedBlockMap; receivedBytes: number; manifest: TransferManifest | null; sink: OpticalSink | null; sinkOpening: boolean; storageError: boolean; verifying: boolean }
-function emptyFileState(): FileReceiveState { return { id: null, collectors: new Map(), blocks: new Map(), received: new ReceivedBlockMap(), receivedBytes: 0, manifest: null, sink: null, sinkOpening: false, storageError: false, verifying: false } }
+interface FileReceiveState { id: number | null; collectors: Map<string, OpticalBlockCollector>; blocks: Map<number, Uint8Array>; processing: Set<number>; received: ReceivedBlockMap; receivedBytes: number; manifest: TransferManifest | null; sink: OpticalSink | null; sinkOpening: boolean; storageError: boolean; verifying: boolean }
+function emptyFileState(): FileReceiveState { return { id: null, collectors: new Map(), blocks: new Map(), processing: new Set(), received: new ReceivedBlockMap(), receivedBytes: 0, manifest: null, sink: null, sinkOpening: false, storageError: false, verifying: false } }
 type ConnectionMode = 'direct' | 'audio'
 type ReceiverHandshakeState = 'IDLE' | 'WAITING_FOR_OFFER' | 'OFFER_RECEIVED' | 'PROBING_CHANNEL' | 'WAITING_FOR_MODE_SELECTION' | 'GENERATING_RESPONSE' | 'SENDING_AUDIO_RESPONSE' | 'DERIVING_KEYS' | 'AWAITING_USER_VERIFICATION' | 'WAITING_FOR_KEY_CONFIRM' | 'SENDING_READY' | 'WAITING_FOR_SENDER' | 'ESTABLISHED' | 'FAILED' | 'CANCELLED'
+const PHONE_DESKTOP_PAIRING_KEY = 'airgaplink-desktop-phone-pair'
+interface DesktopPhonePairing { id: string; token: string; url: string; profileId: string }
+function savedDesktopPhonePairing(): DesktopPhonePairing | null {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(PHONE_DESKTOP_PAIRING_KEY) || 'null') as DesktopPhonePairing | null
+    if (!saved || !parsePhonePairingHash(`#phone=${saved.id}.${saved.token}`) || new URL(saved.url).hash !== `#phone=${saved.id}.${saved.token}` || !OPTICAL_PROFILES.some(profile => profile.id === saved.profileId)) return null
+    return saved
+  } catch { return null }
+}
+function persistDesktopPhonePairing(pairing: DesktopPhonePairing | null) {
+  try {
+    if (pairing) sessionStorage.setItem(PHONE_DESKTOP_PAIRING_KEY, JSON.stringify(pairing))
+    else sessionStorage.removeItem(PHONE_DESKTOP_PAIRING_KEY)
+  } catch { /* The live pairing still works when session storage is unavailable. */ }
+}
 
 export function WorkerOpticalReceiver() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -32,19 +52,32 @@ export function WorkerOpticalReceiver() {
   const completionTagRef = useRef<Uint8Array | null>(null), lastPaceReportAt = useRef(0), lastHintAt = useRef(0), hintCursor = useRef(0), duplicateBlocks = useRef(0), wastedFrames = useRef(0)
   const qualityFeedbackRef = useRef<{ transferId: number; failures: number; nextAt: number } | null>(null)
   const fileStarted = useRef(0)
+  const phoneSocketRef = useRef<WebSocket | null>(null), phoneAuthenticatedRef = useRef(false), phoneQrCanvasRef = useRef<HTMLCanvasElement>(null)
+  const lastPhoneImageRef = useRef<Uint8Array | null>(null)
+  const [phoneVideoActive, setPhoneVideoActive] = useState(false)
+  const phoneLastTelemetryAt = useRef(0), phoneLastValidAt = useRef(0)
+  const phonePaceHistory = useRef<Array<{ at: number; usefulShards: number; usefulShardBytes: number; recoveredBlocks: number; storedBytes: number }>>([])
+  const [phoneOrigin, setPhoneOrigin] = useState(() => savedDesktopPhonePairing()?.url ? new URL(savedDesktopPhonePairing()!.url).origin : ['localhost', '127.0.0.1'].includes(location.hostname) ? '' : location.origin)
+  const [phonePairing, setPhonePairing] = useState<DesktopPhonePairing | null>(savedDesktopPhonePairing)
+  const [phoneStatus, setPhoneStatus] = useState('Phone capture not paired')
+  const [phoneCaptureActive, setPhoneCaptureActive] = useState(() => !!savedDesktopPhonePairing())
+  const [phoneTelemetry, setPhoneTelemetry] = useState({ cameraFps: 0, processedFps: 0, validFps: 0, uniqueFps: 0, failures: 0, recoveredBlocks: 0, repeatedFrames: 0, usefulShards: 0, usefulShardBytes: 0, decodeReason: 0, finderStage: 0, pixelsPerCell: 0, capturePath: 0 })
+  const [phoneDecode, setPhoneDecode] = useState({ finder: 'waiting', reason: 'waiting', width: 0, height: 0, pixelsPerCell: 0, decodeMs: 0, valid: 0, failed: 0 })
+  const [hasPhoneImage, setHasPhoneImage] = useState(false)
   const pacingCode = useRef(0)
   const adaptivePace = useRef(new AdaptiveOpticalPace(DEBUG_PROFILE, 1))
   const calibrationMode = useRef<'idle' | 'probing' | 'selected' | 'transferring'>('idle')
   const selectedPaceCode = useRef(0)
+  const manifestReadyAudioCount = useRef(0)
   const calibrationSamples = useRef(new Map<number, { firstSequence: number; lastSequence: number; seen: Set<number>; shards: Set<number>; firstAt: number; lastAt: number }>())
   useEffect(() => () => { void fileState.current.sink?.remove() }, [])
-  const [profile, setProfile] = useState<OpticalProfile>(DEBUG_PROFILE)
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('direct')
+  const [profile, setProfile] = useState<OpticalProfile>(() => OPTICAL_PROFILES.find(item => item.id === savedDesktopPhonePairing()?.profileId) || DEBUG_PROFILE)
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>(() => savedDesktopPhonePairing() ? 'audio' : 'direct')
   const [audioSessionId, setAudioSessionId] = useState(() => crypto.getRandomValues(new Uint32Array(1))[0])
   const audioSessionIdRef = useRef(audioSessionId)
   const [task, setTask] = useState<'file' | 'benchmark'>('file'), [fileStatus, setFileStatus] = useState('Loading local erasure codec…'), [downloadUrl, setDownloadUrl] = useState<string | null>(null)
   const [fileProgress, setFileProgress] = useState({ blocks: 0, totalBlocks: 0, receivedBytes: 0, totalBytes: 0, verifiedBytes: 0, elapsedSeconds: 0 })
-  const [speakerStatus, setSpeakerStatus] = useState('Speaker feedback off'), [audioPacketsSent, setAudioPacketsSent] = useState(0)
+  const [speakerStatus, setSpeakerStatus] = useState('Speaker feedback off'), [audioPacketsSent, setAudioPacketsSent] = useState(0), [audioPacketsPlayed, setAudioPacketsPlayed] = useState(0), [speakerContextState, setSpeakerContextState] = useState('closed')
   const [opticalLink, setOpticalLink] = useState<'searching' | 'aligned' | 'interrupted'>('searching')
   const [recommendedPace, setRecommendedPace] = useState(0)
   const [paceDiagnostics, setPaceDiagnostics] = useState({ validFps: 0, uniqueFps: 0, invalidFps: 0, senderFps: 0, usefulKBps: 0, storedKBps: 0, cameraFps: 0 })
@@ -92,11 +125,12 @@ export function WorkerOpticalReceiver() {
     return () => { cancelled = true }
   }, [])
   useEffect(() => { let cancelled = false; void IndexedDbOpticalSink.probe().then(available => { if (!cancelled) { sparseStorageAvailable.current = available; sparseStorageProbeDone.current = true } }).catch(() => { if (!cancelled) sparseStorageProbeDone.current = true }); return () => { cancelled = true } }, [])
-  const stopSpeaker = () => { if (speakerTimer.current !== null) window.clearInterval(speakerTimer.current); speakerTimer.current = null; if (completionStopTimer.current !== null) window.clearTimeout(completionStopTimer.current); completionStopTimer.current = null; if (readyPlaybackTimer.current !== null) window.clearTimeout(readyPlaybackTimer.current); readyPlaybackTimer.current = null; void speaker.current?.close(); speaker.current = null; nextAudioStart.current = 0; setSpeakerStatus('Speaker feedback off') }
+  const stopSpeaker = () => { if (speakerTimer.current !== null) window.clearInterval(speakerTimer.current); speakerTimer.current = null; if (completionStopTimer.current !== null) window.clearTimeout(completionStopTimer.current); completionStopTimer.current = null; if (readyPlaybackTimer.current !== null) window.clearTimeout(readyPlaybackTimer.current); readyPlaybackTimer.current = null; void speaker.current?.close(); speaker.current = null; nextAudioStart.current = 0; setSpeakerContextState('closed'); setSpeakerStatus('Speaker feedback off') }
   useEffect(() => () => stopSpeaker(), [])
   const sendAcousticStatus = () => {
     const context = speaker.current, state = fileState.current, manifest = state.manifest
     if (!context) return
+    if (context.state !== 'running') { setSpeakerContextState(context.state); setSpeakerStatus('Audio output suspended · tap Resume speaker'); return }
     // Do not queue stale block bitmaps behind an in-flight tone. The next
     // periodic packet will contain the newest stored-block set. Completion is
     // allowed one slot after the current tone so the sender can stop promptly.
@@ -131,7 +165,13 @@ export function WorkerOpticalReceiver() {
     else if (verified.current) { type = ControlType.TRANSFER_COMPLETE; payload = completionTagRef.current || new Uint8Array(); compact = connectionMode === 'audio' && !completionTagRef.current }
     else if (connectionMode === 'audio' && opticalLost.current) { type = ControlType.PAUSE; payload = Uint8Array.of(opticalProfileNumber(profile), (pacingCode.current << 4) | PROTOCOL_VERSION) }
     else if (connectionMode === 'audio' && resumeRepeats.current > 0) { type = ControlType.RESUME; payload = Uint8Array.of(opticalProfileNumber(profile), (pacingCode.current << 4) | PROTOCOL_VERSION); resumeRepeats.current -= 1 }
-    else if (connectionMode === 'audio' && calibrationMode.current === 'selected') { type = ControlType.CALIBRATION_SELECTED; payload = Uint8Array.of(opticalProfileNumber(profile), PROTOCOL_VERSION, selectedPaceCode.current, 0); compact = true }
+    else if (connectionMode === 'audio' && calibrationMode.current === 'selected') {
+      const material = handshake.material
+      if (manifest && state.received.has(0) && material && ((handshake.responseCapabilities || 0) & HANDSHAKE_CAPABILITY_MANIFEST_READY) && manifestReadyAudioCount.current++ % 2 === 1) {
+        type = ControlType.MANIFEST_READY
+        payload = manifestReadyTag(material.keys.handshakeConfirmKey, material.transcriptHash, manifest.sha256, manifest.totalBlocks)
+      } else { type = ControlType.CALIBRATION_SELECTED; payload = Uint8Array.of(opticalProfileNumber(profile), PROTOCOL_VERSION, selectedPaceCode.current, 0); compact = true }
+    }
     else if (connectionMode === 'audio' && alignmentSeen.current && calibrationMode.current !== 'transferring') { type = ControlType.PROFILE_SELECTED; payload = Uint8Array.of(opticalProfileNumber(profile), (pacingCode.current << 4) | PROTOCOL_VERSION) }
     else if (connectionMode === 'audio' && !manifest && calibrationMode.current === 'transferring') { type = ControlType.BLOCK_STATUS; payload = makeCompactStatusPayload(0, 0, pacingCode.current); compact = true }
     else if (connectionMode === 'audio' && !manifest && handshake.state !== 'ESTABLISHED') return
@@ -180,13 +220,14 @@ export function WorkerOpticalReceiver() {
     const buffer = context.createBuffer(1, samples.length, context.sampleRate)
     buffer.copyToChannel(samples, 0)
     const source = context.createBufferSource(); source.buffer = buffer; source.connect(context.destination)
+    source.onended = () => setAudioPacketsPlayed(value => value + 1)
     const start = Math.max(context.currentTime, nextAudioStart.current)
     source.start(start)
     nextAudioStart.current = start + buffer.duration + (toneCount === 2 ? 0.1 : 0.015)
     if (connectionMode === 'audio' && (probePacket || handshakeFragment || type === ControlType.HANDSHAKE_COMPLETE)) handshake.acousticAirtimeSeconds = (handshake.acousticAirtimeSeconds || 0) + buffer.duration + (toneCount === 2 ? 0.1 : 0.015)
     setAudioPacketsSent(value => value + 1)
     const modeLabel = toneCount === 32 ? 'OFDM' : `${toneCount}-FSK`
-    setSpeakerStatus(probePacket ? `Measuring acoustic channel · ${modeLabel} CRC probe (${handshake.outgoing.length} remaining)` : handshakeFragment ? `Sending ${modeLabel} ${packet.type === ControlType.HANDSHAKE_DENSE_FRAGMENT ? 'dense ' : ''}secure handshake fragment (${handshake.outgoing.length} remaining)` : type === ControlType.HANDSHAKE_COMPLETE ? `Sending ${modeLabel} authenticated READY (${handshake.outgoing.length} part remaining)` : type === ControlType.OPTICAL_QUALITY ? 'RGB header readable, payload failing CRC · asking sender to hold the offer longer' : type === ControlType.HELLO ? `Sending audio HELLO · session ${transferId.toString(16).padStart(8, '0')}` : type === ControlType.PROFILE_SELECTED ? 'Camera aligned · requesting optical calibration' : type === ControlType.CALIBRATION_SELECTED ? `Calibration selected ${opticalPaceFps(selectedPaceCode.current)} FPS · sending over sound` : type === ControlType.PAUSE ? 'Optical link lost · sending PAUSE over sound' : type === ControlType.RESUME ? 'Optical link reacquired · sending RESUME over sound' : type === ControlType.TRANSFER_COMPLETE ? 'Sending verified-complete tone' : type === ControlType.READY ? 'Optical manifest confirmed; sending compact READY' : compact ? `Sending ${modeLabel} compact cumulative block ACK` : 'Sending block bitmap over speaker')
+    setSpeakerStatus(probePacket ? `Measuring acoustic channel · ${modeLabel} CRC probe (${handshake.outgoing.length} remaining)` : handshakeFragment ? `Sending ${modeLabel} ${packet.type === ControlType.HANDSHAKE_DENSE_FRAGMENT ? 'dense ' : ''}secure handshake fragment (${handshake.outgoing.length} remaining)` : type === ControlType.HANDSHAKE_COMPLETE ? `Sending ${modeLabel} authenticated READY (${handshake.outgoing.length} part remaining)` : type === ControlType.OPTICAL_QUALITY ? 'RGB header readable, payload failing CRC · asking sender to hold the offer longer' : type === ControlType.HELLO ? `Sending audio HELLO · session ${transferId.toString(16).padStart(8, '0')}` : type === ControlType.PROFILE_SELECTED ? 'Camera aligned · requesting optical calibration' : type === ControlType.CALIBRATION_SELECTED ? `Calibration selected ${opticalPaceFps(selectedPaceCode.current)} FPS · sending over sound` : type === ControlType.MANIFEST_READY ? 'Encrypted manifest durably stored · sending authenticated start signal' : type === ControlType.PAUSE ? 'Optical link lost · sending PAUSE over sound' : type === ControlType.RESUME ? 'Optical link reacquired · sending RESUME over sound' : type === ControlType.TRANSFER_COMPLETE ? 'Sending verified-complete tone' : type === ControlType.READY ? 'Optical manifest confirmed; sending compact READY' : compact ? `Sending ${modeLabel} compact cumulative block ACK` : 'Sending block bitmap over speaker')
     if (probePacket && !handshake.outgoing.length) { handshake.state = 'WAITING_FOR_MODE_SELECTION'; setHandshakeState('WAITING_FOR_MODE_SELECTION') }
     if (responseFragment && pendingHandshakePacket && !handshake.outgoing.length) {
       handshake.nextFullRetryAt = performance.now() + Math.ceil((nextAudioStart.current - context.currentTime) * 1000) + 5000
@@ -209,8 +250,25 @@ export function WorkerOpticalReceiver() {
   }
   const startSpeaker = async () => {
     if (speaker.current) return
-    try { const context = new AudioContext(); speaker.current = context; await context.resume(); setSpeakerStatus(connectionMode === 'audio' ? 'Speaker ready; waiting for the sender optical offer' : 'Speaker ready; awaiting recovered blocks'); sendAcousticStatus(); speakerTimer.current = window.setInterval(sendAcousticStatus, connectionMode === 'audio' && handshakeRef.current.offer?.capabilities && (handshakeRef.current.offer.capabilities & (HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_QUAD_FSK)) ? 150 : connectionMode === 'audio' ? 2200 : 4400) }
+    try { const context = new AudioContext(); speaker.current = context; context.onstatechange = () => { setSpeakerContextState(context.state); if (context.state !== 'running' && speaker.current === context) setSpeakerStatus('Audio output suspended · tap Resume speaker') }; await context.resume(); setSpeakerContextState(context.state); if (context.state !== 'running') { setSpeakerStatus('Audio output suspended · tap Resume speaker'); return }; setSpeakerStatus(connectionMode === 'audio' ? 'Speaker ready; waiting for the sender optical offer' : 'Speaker ready; awaiting recovered blocks'); sendAcousticStatus(); speakerTimer.current = window.setInterval(sendAcousticStatus, connectionMode === 'audio' && handshakeRef.current.offer?.capabilities && (handshakeRef.current.offer.capabilities & (HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_QUAD_FSK)) ? 150 : connectionMode === 'audio' ? 2200 : 4400) }
     catch { stopSpeaker(); setSpeakerStatus('Could not start speaker feedback') }
+  }
+  const resumeSpeaker = async () => {
+    const context = speaker.current
+    if (!context) { await startSpeaker(); return }
+    try { await context.resume(); setSpeakerContextState(context.state); if (context.state === 'running') { setSpeakerStatus('Speaker resumed'); if (speakerTimer.current === null) speakerTimer.current = window.setInterval(sendAcousticStatus, connectionMode === 'audio' ? 150 : 2200); sendAcousticStatus() } }
+    catch { setSpeakerStatus('Safari could not resume audio output') }
+  }
+  const playSpeakerTest = async () => {
+    await resumeSpeaker()
+    const context = speaker.current
+    if (!context || context.state !== 'running') return
+    const oscillator = context.createOscillator(), gain = context.createGain(), start = Math.max(context.currentTime, nextAudioStart.current)
+    oscillator.type = 'sine'; oscillator.frequency.value = 440
+    gain.gain.setValueAtTime(0.0001, start); gain.gain.linearRampToValueAtTime(0.18, start + 0.02); gain.gain.setValueAtTime(0.18, start + 0.35); gain.gain.linearRampToValueAtTime(0.0001, start + 0.42)
+    oscillator.connect(gain).connect(context.destination); oscillator.start(start); oscillator.stop(start + 0.43)
+    nextAudioStart.current = start + 0.45
+    setSpeakerStatus('Playing a 440 Hz speaker test tone')
   }
   useEffect(() => {
     if (!speaker.current || connectionMode !== 'audio') return
@@ -235,7 +293,8 @@ export function WorkerOpticalReceiver() {
     }, 1000)
     return () => window.clearInterval(timer)
   }, [task, connectionMode, cameraActive, profile, audioSessionId])
-  const resetFile = () => { cancelHandshake(); handshakeRef.current = { state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() }; setHandshakeState('WAITING_FOR_OFFER'); setResponseRounds(0); sasManuallyVerifiedRef.current = false; stopSpeaker(); void fileState.current.sink?.remove(); fileState.current = emptyFileState(); fileDecodeStats.current = { symbols: 0, usefulShards: 0, usefulShardBytes: 0, recoveredBlocks: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 }; completionTagRef.current = null; lastPaceReportAt.current = 0; lastHintAt.current = 0; hintCursor.current = 0; duplicateBlocks.current = 0; wastedFrames.current = 0; verified.current = false; readySent.current = false; alignmentSeen.current = false; opticalLost.current = false; lastOpticalAt.current = 0; resumeRepeats.current = 0; pacingCode.current = 0; selectedPaceCode.current = 0; calibrationMode.current = 'idle'; calibrationSamples.current.clear(); setRecommendedPace(0); setOpticalLink('searching'); completeSignalsSent.current = 0; fileStarted.current = 0; const nextSessionId = crypto.getRandomValues(new Uint32Array(1))[0]; audioSessionIdRef.current = nextSessionId; setAudioSessionId(nextSessionId); setCameraActive(true); setFileProgress({ blocks: 0, totalBlocks: 0, receivedBytes: 0, totalBytes: 0, verifiedBytes: 0, elapsedSeconds: 0 }); if (downloadUrl) URL.revokeObjectURL(downloadUrl); setDownloadUrl(null); setFileStatus('Waiting for secure optical handshake offer') }
+  const resetFile = () => { cancelHandshake(); handshakeRef.current = { state: 'WAITING_FOR_OFFER', responseRounds: 0, readyRounds: 0, outgoing: [], reassembler: new AcousticFragmentReassembler() }; setHandshakeState('WAITING_FOR_OFFER'); setResponseRounds(0); sasManuallyVerifiedRef.current = false; stopSpeaker(); void fileState.current.sink?.remove(); fileState.current = emptyFileState(); fileDecodeStats.current = { symbols: 0, usefulShards: 0, usefulShardBytes: 0, recoveredBlocks: 0, invalidSymbols: 0, sessionRejects: 0, manifestShards: 0, lastBlock: -1 }; completionTagRef.current = null; lastPaceReportAt.current = 0; phonePaceHistory.current = []; lastHintAt.current = 0; hintCursor.current = 0; duplicateBlocks.current = 0; wastedFrames.current = 0; verified.current = false; readySent.current = false; alignmentSeen.current = false; opticalLost.current = false; lastOpticalAt.current = 0; resumeRepeats.current = 0; pacingCode.current = 0; selectedPaceCode.current = 0; manifestReadyAudioCount.current = 0; calibrationMode.current = 'idle'; calibrationSamples.current.clear(); setRecommendedPace(0); setOpticalLink('searching'); completeSignalsSent.current = 0; fileStarted.current = 0; const nextSessionId = crypto.getRandomValues(new Uint32Array(1))[0]; audioSessionIdRef.current = nextSessionId; setAudioSessionId(nextSessionId); setCameraActive(true); setFileProgress({ blocks: 0, totalBlocks: 0, receivedBytes: 0, totalBytes: 0, verifiedBytes: 0, elapsedSeconds: 0 }); if (downloadUrl) URL.revokeObjectURL(downloadUrl); setDownloadUrl(null); setFileStatus('Waiting for secure optical handshake offer') }
+  const sendPhoneAck = (transferId: number, blockId: number) => { if (phoneAuthenticatedRef.current && phoneSocketRef.current?.readyState === WebSocket.OPEN) phoneSocketRef.current.send(encodePhoneRelayMessage({ kind: 'ack', transferId, blockId })) }
   const markStored = (state: FileReceiveState, blockId: number) => {
     if (fileState.current !== state || state.received.has(blockId)) return
     const manifest = state.manifest
@@ -245,7 +304,8 @@ export function WorkerOpticalReceiver() {
     state.receivedBytes += Math.max(0, blockLength - (blockId === 0 ? TRANSFER_MANIFEST_BYTES : 0))
     setFileStatus(`Stored ${state.received.size} of ${manifest.totalBlocks} blocks · transfer ${state.id!.toString(16).padStart(8, '0')}`)
     setFileProgress(previous => ({ ...previous, blocks: state.received.size, totalBlocks: manifest.totalBlocks, receivedBytes: state.receivedBytes, totalBytes: manifest.archiveBytes, elapsedSeconds: fileStarted.current ? (performance.now() - fileStarted.current) / 1000 : 0 }))
-    if (!((handshakeRef.current.responseCapabilities || 0) & HANDSHAKE_CAPABILITY_SPARSE_STREAM)) sendAcousticStatus()
+    sendPhoneAck(state.id!, blockId)
+    if (blockId === 0 || !((handshakeRef.current.responseCapabilities || 0) & HANDSHAKE_CAPABILITY_SPARSE_STREAM)) sendAcousticStatus()
     finishFileIfReady(state)
   }
   const queueBlockWrite = (state: FileReceiveState, blockId: number, bytes: Uint8Array) => {
@@ -313,15 +373,26 @@ export function WorkerOpticalReceiver() {
     const handshake = handshakeRef.current, offer = handshake.offer
     if (!offer || !handshake.privateKey || !handshake.publicKey) return
     const compactId = new DataView(offer.sessionId.buffer, offer.sessionId.byteOffset, 4).getUint32(0)
-    let responseCapabilities = offer.capabilities & (HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL | HANDSHAKE_CAPABILITY_COMPACT_READY | HANDSHAKE_CAPABILITY_FAST_READY | HANDSHAKE_CAPABILITY_FAST_OCTAL | HANDSHAKE_CAPABILITY_DENSE_RESPONSE | HANDSHAKE_CAPABILITY_RESPONSE_PARITY | HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO | HANDSHAKE_CAPABILITY_HEX_FSK | HANDSHAKE_CAPABILITY_OFDM | HANDSHAKE_CAPABILITY_SPARSE_STREAM)
-    if (!sparseStorageAvailable.current) responseCapabilities &= ~HANDSHAKE_CAPABILITY_SPARSE_STREAM
+    let responseCapabilities = offer.capabilities & (HANDSHAKE_CAPABILITY_QUAD_FSK | HANDSHAKE_CAPABILITY_QUAD_CONTROL | HANDSHAKE_CAPABILITY_OCTAL_FSK | HANDSHAKE_CAPABILITY_OCTAL_CONTROL | HANDSHAKE_CAPABILITY_COMPACT_READY | HANDSHAKE_CAPABILITY_FAST_READY | HANDSHAKE_CAPABILITY_FAST_OCTAL | HANDSHAKE_CAPABILITY_DENSE_RESPONSE | HANDSHAKE_CAPABILITY_RESPONSE_PARITY | HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO | HANDSHAKE_CAPABILITY_HEX_FSK | HANDSHAKE_CAPABILITY_OFDM | HANDSHAKE_CAPABILITY_SPARSE_STREAM | HANDSHAKE_CAPABILITY_MANIFEST_READY | HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS | HANDSHAKE_CAPABILITY_RECEIVER_PROFILE)
+    if (!phonePairing) responseCapabilities &= ~HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS
+    if (!sparseStorageAvailable.current) responseCapabilities &= ~(HANDSHAKE_CAPABILITY_SPARSE_STREAM | HANDSHAKE_CAPABILITY_MANIFEST_READY)
+    if (!(responseCapabilities & HANDSHAKE_CAPABILITY_SPARSE_STREAM)) responseCapabilities &= ~HANDSHAKE_CAPABILITY_MANIFEST_READY
     if (!mode) responseCapabilities &= ~(HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO | HANDSHAKE_CAPABILITY_HEX_FSK | HANDSHAKE_CAPABILITY_OFDM)
     else if (mode === 8) responseCapabilities &= ~(HANDSHAKE_CAPABILITY_HEX_FSK | HANDSHAKE_CAPABILITY_OFDM | HANDSHAKE_CAPABILITY_FAST_OCTAL)
     else if (mode === 16) responseCapabilities &= ~HANDSHAKE_CAPABILITY_OFDM
     else if (!(responseCapabilities & HANDSHAKE_CAPABILITY_OFDM)) throw new Error('OFDM was not offered')
     if (mode === 16 && (!(responseCapabilities & HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO) || !(responseCapabilities & HANDSHAKE_CAPABILITY_HEX_FSK))) throw new Error('16-FSK was not offered')
     if (!(responseCapabilities & HANDSHAKE_CAPABILITY_DENSE_RESPONSE) || !wasmBytes.current) responseCapabilities &= ~HANDSHAKE_CAPABILITY_RESPONSE_PARITY
-    const response = makeResponse(offer, { privateKey: handshake.privateKey, publicKey: handshake.publicKey }, opticalProfileNumber(profile), responseCapabilities)
+    // This phone capture already proved that 320×180 headers can decode while
+    // 800-byte payloads fail CRC. A current sender honors the receiver's
+    // transcript-bound safer profile before key confirmation and file setup.
+    const negotiatedProfile = phonePairing && profile.id === 'binary-320x180' && (responseCapabilities & HANDSHAKE_CAPABILITY_RECEIVER_PROFILE)
+      ? OPTICAL_PROFILES.find(item => item.id === 'binary-240x120') || profile : profile
+    const response = makeResponse(offer, { privateKey: handshake.privateKey, publicKey: handshake.publicKey }, opticalProfileNumber(negotiatedProfile), responseCapabilities)
+    if (negotiatedProfile !== profile) {
+      setProfile(negotiatedProfile)
+      setPhonePairing(current => { if (current) persistDesktopPhonePairing({ ...current, profileId: negotiatedProfile.id }); return current ? { ...current, profileId: negotiatedProfile.id } : null })
+    }
     handshake.state = 'GENERATING_RESPONSE'; setHandshakeState('GENERATING_RESPONSE')
     handshake.responseCapabilities = response.capabilities; handshake.selectedMode = mode; handshake.material = deriveHandshakeMaterial(offer, response, handshake.privateKey, 'receiver')
     handshake.responseMessage = encodeHandshakeResponse(response)
@@ -331,7 +402,7 @@ export function WorkerOpticalReceiver() {
     handshake.outgoing = handshake.responsePackets.slice(); audioSequence.current = (audioSequence.current + handshake.outgoing.length) & 0xffff
     handshake.responseRounds = 1; handshake.nextFullRetryAt = Infinity; handshake.lastNackRequestId = undefined; handshake.lastNackAt = undefined; handshake.selectivePackets = 0; setResponseRounds(1)
     handshake.state = 'AWAITING_USER_VERIFICATION'; setHandshakeState('AWAITING_USER_VERIFICATION'); setSas(handshake.material.sas)
-    setFileStatus(speaker.current ? `Sender detected. Sending ${mode === 32 ? 'OFDM' : `${mode || responseToneCount(offer.capabilities, 1)}-FSK`} secure response; verify the pairing code.` : 'Sender detected. Enable receiver speaker to send the audio response; then verify the pairing code.')
+    setFileStatus(speaker.current ? `Sender detected. ${negotiatedProfile !== profile ? 'Phone camera selected the more readable 240×120 profile. ' : ''}Sending ${mode === 32 ? 'OFDM' : `${mode || responseToneCount(offer.capabilities, 1)}-FSK`} secure response; verify the pairing code.` : 'Sender detected. Enable receiver speaker to send the audio response; then verify the pairing code.')
     sendAcousticStatus()
   }
   const receiveHandshakeFrame = (payload: Uint8Array) => {
@@ -339,6 +410,10 @@ export function WorkerOpticalReceiver() {
     const nack = decodeHandshakeNack(payload)
     if (nack && connectionMode === 'audio') {
       if (handshake.offer && handshake.responsePackets && (handshake.state === 'AWAITING_USER_VERIFICATION' || handshake.state === 'WAITING_FOR_KEY_CONFIRM') && isFreshHandshakeNackRequest(nack.requestId, handshake.lastNackRequestId, performance.now(), handshake.lastNackAt)) {
+        // The sender repeats a NACK optically until it hears a repair. Do not
+        // prepend another copy while a prior response/repair is still playing:
+        // on a lossy audio link that made this queue grow without bound.
+        if (handshake.outgoing.length) return true
         const selected = selectHandshakeNackRetransmissions(nack, handshake.offer.sessionId, handshake.responsePackets, audioSequence.current)
         if (selected.length) {
           audioSequence.current = (audioSequence.current + selected.length) & 0xffff
@@ -413,51 +488,113 @@ export function WorkerOpticalReceiver() {
     if (confirm && handshake.offer && equalBytes(confirm.sessionId, handshake.offer.sessionId)) return true
     return false
   }
+  const acceptRecoveredBlock = async (transferId: number, blockId: number, visit: number | undefined, ciphertext: Uint8Array) => {
+    const state = fileState.current
+    if (connectionMode === 'audio' && (handshakeRef.current.state !== 'WAITING_FOR_SENDER' && handshakeRef.current.state !== 'ESTABLISHED' || transferId !== audioSessionIdRef.current)) return
+    if (state.id === null) state.id = transferId
+    if (transferId !== state.id || state.verifying || state.storageError || state.manifest && blockId >= state.manifest.totalBlocks) return
+    if (state.received.has(blockId)) { duplicateBlocks.current += 1; sendPhoneAck(transferId, blockId); return }
+    if (state.blocks.has(blockId) || state.processing.has(blockId)) { duplicateBlocks.current += 1; return }
+    const cyclic = connectionMode === 'audio' && !!((handshakeRef.current.responseCapabilities || 0) & HANDSHAKE_CAPABILITY_SPARSE_STREAM)
+    if (cyclic !== (visit !== undefined)) { fileDecodeStats.current.invalidSymbols += 1; return }
+    state.processing.add(blockId)
+    try {
+      let block = ciphertext
+      if (connectionMode === 'audio') {
+        const handshake = handshakeRef.current
+        if (!handshake.offer || !handshake.material) return
+        try { block = await aesGcmDecrypt(handshake.material.keys.opticalEncryptionKey, cyclic ? cyclicOpticalNonce(handshake.material.keys.sessionBindingKey.slice(0, 4), blockId, visit!) : opticalNonce(handshake.material.keys.sessionBindingKey.slice(0, 6), blockId, 0), ciphertext, cyclic ? cyclicOpticalBlockAad(handshake.offer.sessionId, transferId, blockId, visit!) : opticalBlockAad(handshake.offer.sessionId, transferId, blockId)); handshake.readyMessage = undefined; handshake.outgoing = [] }
+        catch { setFileStatus('Encrypted optical block failed authentication; continuing cyclic repair'); return }
+      }
+      if (fileState.current !== state) return
+      fileDecodeStats.current.recoveredBlocks += 1
+      state.blocks.set(blockId, block); for (const key of state.collectors.keys()) if (key.startsWith(`${blockId}:`)) state.collectors.delete(key)
+      if (blockId === 0) {
+        const manifest = unpackTransferManifest(block)
+        if (!manifest || manifest.transferId !== state.id) { state.storageError = true; setFileStatus('Invalid optical manifest'); return }
+        state.manifest = manifest
+        state.received.configure(manifest.totalBlocks)
+        for (const [pendingId, pendingBytes] of state.blocks) {
+          const expected = Math.min(manifest.blockBytes, TRANSFER_MANIFEST_BYTES + manifest.archiveBytes - pendingId * manifest.blockBytes)
+          if (pendingId >= manifest.totalBlocks || pendingBytes.length !== expected) state.blocks.delete(pendingId)
+        }
+        setFileProgress(previous => ({ ...previous, totalBlocks: manifest.totalBlocks, totalBytes: manifest.archiveBytes }))
+        state.sinkOpening = true
+        void (async (): Promise<OpticalSink> => {
+          if (diskStorageRef.current === 'opfs' && !cyclic) {
+            try { return await LocalOpticalSink.create(manifest) }
+            catch { /* Retry using local IndexedDB storage. */ }
+          }
+          return IndexedDbOpticalSink.create(manifest)
+        })().then(sink => {
+          if (fileState.current !== state) { void sink.remove(); return }
+          state.sink = sink; state.sinkOpening = false
+          for (const [index, bytes] of state.blocks) queueBlockWrite(state, index, bytes)
+          finishFileIfReady(state)
+        }).catch(error => {
+          if (fileState.current !== state) return
+          state.sinkOpening = false
+          if (cyclic) { state.storageError = true; setFileStatus(`Sparse transfer requires durable IndexedDB storage: ${error instanceof Error ? error.message : 'storage error'}`); return }
+          if (manifest.archiveBytes > 16 * 1024 * 1024) { state.storageError = true; setFileStatus(`Local browser storage unavailable: ${error instanceof Error ? error.message : 'storage error'}`); return }
+          setFileStatus('Local browser storage unavailable; using 16 MiB memory fallback')
+          for (const index of state.blocks.keys()) markStored(state, index)
+          finishFileIfReady(state)
+        })
+      }
+      if (state.sink) queueBlockWrite(state, blockId, block)
+      else if (!state.sinkOpening && state.manifest) markStored(state, blockId)
+      else if (state.blocks.size > (state.manifest ? 64 : 32)) state.blocks.delete(state.blocks.keys().next().value!)
+    } finally { state.processing.delete(blockId) }
+  }
+
+  const acceptOpticalObservation = (frameId: number, transferId: number, blockId: number, shardIndex: number) => {
+    if (connectionMode !== 'audio' || transferId !== audioSessionIdRef.current || (handshakeRef.current.state !== 'WAITING_FOR_SENDER' && handshakeRef.current.state !== 'ESTABLISHED')) return
+    if (!alignmentSeen.current) {
+      handshakeRef.current.fastReadyMac = undefined; handshakeRef.current.readyMessage = undefined; handshakeRef.current.outgoing = []
+      handshakeRef.current.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED')
+      setFileStatus('Sender received READY. Paired optical alignment detected; collecting encrypted manifest shards…')
+    }
+    const calibration = readCalibrationFrameId(frameId)
+    if (opticalLost.current && !calibration && frameId === 0 && calibrationMode.current !== 'transferring') { calibrationMode.current = 'idle'; selectedPaceCode.current = 0; calibrationSamples.current.clear() }
+    if (calibration?.stage === CALIBRATION_END_STAGE && calibrationMode.current !== 'selected' && calibrationMode.current !== 'transferring') {
+      const samples = new Map<number, { firstSequence: number; lastSequence: number; uniqueFrames: number; distinctShards: number; spanMs: number; recoverableVisits: number }>()
+      for (const [stage, item] of calibrationSamples.current) samples.set(stage, { firstSequence: item.firstSequence, lastSequence: item.lastSequence, uniqueFrames: item.seen.size, distinctShards: item.shards.size, spanMs: item.lastAt - item.firstAt, recoverableVisits: countRecoverableCalibrationVisits(item.seen) })
+      const code = selectCalibratedPaceCode(profile, samples)
+      selectedPaceCode.current = code; pacingCode.current = code; adaptivePace.current = new AdaptiveOpticalPace(profile, code); setRecommendedPace(opticalPaceFps(code))
+      calibrationMode.current = 'selected'
+      setFileStatus(`Optical calibration complete: ${opticalPaceFps(code)} logical FPS. Sending selection over sound…`)
+    } else if (calibration && calibration.stage < calibrationRates(profile).length && calibrationMode.current !== 'selected' && calibrationMode.current !== 'transferring') {
+      calibrationMode.current = 'probing'
+      const now = performance.now()
+      let sample = calibrationSamples.current.get(calibration.stage)
+      if (!sample) { sample = { firstSequence: calibration.sequence, lastSequence: calibration.sequence, seen: new Set<number>(), shards: new Set<number>(), firstAt: now, lastAt: now }; calibrationSamples.current.set(calibration.stage, sample) }
+      sample.shards.add(shardIndex)
+      if (!sample.seen.has(calibration.sequence)) { sample.seen.add(calibration.sequence); sample.firstSequence = Math.min(sample.firstSequence, calibration.sequence); sample.lastSequence = Math.max(sample.lastSequence, calibration.sequence); sample.lastAt = now }
+    } else if (!calibration && frameId > 0) calibrationMode.current = 'transferring'
+    lastOpticalAt.current = performance.now()
+    if (!alignmentSeen.current) { alignmentSeen.current = true; setOpticalLink('aligned'); sendAcousticStatus() }
+    else if (opticalLost.current) { opticalLost.current = false; resumeRepeats.current = 1; setOpticalLink('aligned'); setFileStatus(calibrationMode.current === 'transferring' ? 'Optical link reacquired. Receiving encrypted blocks…' : 'Optical link reacquired. Resuming calibration…'); sendAcousticStatus() }
+    else if (calibrationMode.current === 'selected') sendAcousticStatus()
+    if (!fileStarted.current && frameId > 0 && !calibration) fileStarted.current = performance.now()
+    fileDecodeStats.current.lastBlock = blockId
+  }
+
   const acceptFileFrame = async (result: OpticalImageDecode) => {
     if (!recoveryCodec.current || !result.ok) return
     if (connectionMode === 'audio' && receiveHandshakeFrame(result.payload)) return
     if (connectionMode === 'audio' && handshakeRef.current.state !== 'WAITING_FOR_SENDER' && handshakeRef.current.state !== 'ESTABLISHED') return
     const symbol = unpackOpticalSymbol(result.payload)
     if (!symbol || symbol.blockId !== result.header.blockId) { fileDecodeStats.current.invalidSymbols += 1; return }
-    const state = fileState.current
     if (connectionMode === 'audio' && symbol.transferId !== audioSessionId) { fileDecodeStats.current.sessionRejects += 1; return }
     if (connectionMode === 'audio' && (result.header.profileId !== opticalProfileNumber(profile) || result.header.version !== PROTOCOL_VERSION)) { fileDecodeStats.current.invalidSymbols += 1; return }
-    if (connectionMode === 'audio' && !alignmentSeen.current) {
-      // A correctly routed file symbol proves the sender received READY.
-      // Stop replaying it immediately instead of waiting for block-zero FEC.
-      handshakeRef.current.fastReadyMac = undefined; handshakeRef.current.readyMessage = undefined; handshakeRef.current.outgoing = []
-      handshakeRef.current.state = 'ESTABLISHED'; setHandshakeState('ESTABLISHED')
-      setFileStatus('Sender received READY. Paired optical alignment detected; collecting encrypted manifest shards…')
-    }
-    if (connectionMode === 'audio') {
-      const calibration = readCalibrationFrameId(result.header.frameId)
-      if (opticalLost.current && !calibration && result.header.frameId === 0 && calibrationMode.current !== 'transferring') { calibrationMode.current = 'idle'; selectedPaceCode.current = 0; calibrationSamples.current.clear() }
-      if (calibration?.stage === CALIBRATION_END_STAGE && calibrationMode.current !== 'selected' && calibrationMode.current !== 'transferring') {
-        const samples = new Map<number, { firstSequence: number; lastSequence: number; uniqueFrames: number; distinctShards: number; spanMs: number; recoverableVisits: number }>()
-        for (const [stage, item] of calibrationSamples.current) samples.set(stage, { firstSequence: item.firstSequence, lastSequence: item.lastSequence, uniqueFrames: item.seen.size, distinctShards: item.shards.size, spanMs: item.lastAt - item.firstAt, recoverableVisits: countRecoverableCalibrationVisits(item.seen) })
-        const code = selectCalibratedPaceCode(profile, samples)
-        selectedPaceCode.current = code; pacingCode.current = code; adaptivePace.current = new AdaptiveOpticalPace(profile, code); setRecommendedPace(opticalPaceFps(code))
-        calibrationMode.current = 'selected'
-        setFileStatus(`Optical calibration complete: ${opticalPaceFps(code)} logical FPS. Sending selection over sound…`)
-      } else if (calibration && calibration.stage < calibrationRates(profile).length && calibrationMode.current !== 'selected' && calibrationMode.current !== 'transferring') {
-        calibrationMode.current = 'probing'
-        const now = performance.now()
-        let sample = calibrationSamples.current.get(calibration.stage)
-        if (!sample) { sample = { firstSequence: calibration.sequence, lastSequence: calibration.sequence, seen: new Set<number>(), shards: new Set<number>(), firstAt: now, lastAt: now }; calibrationSamples.current.set(calibration.stage, sample) }
-        sample.shards.add(symbol.index)
-        if (!sample.seen.has(calibration.sequence)) { sample.seen.add(calibration.sequence); sample.firstSequence = Math.min(sample.firstSequence, calibration.sequence); sample.lastSequence = Math.max(sample.lastSequence, calibration.sequence); sample.lastAt = now }
-      } else if (!calibration && result.header.frameId > 0) calibrationMode.current = 'transferring'
-      lastOpticalAt.current = performance.now()
-      if (!alignmentSeen.current) { alignmentSeen.current = true; setOpticalLink('aligned'); sendAcousticStatus() }
-      else if (opticalLost.current) { opticalLost.current = false; resumeRepeats.current = 1; setOpticalLink('aligned'); setFileStatus(calibrationMode.current === 'transferring' ? 'Optical link reacquired. Receiving encrypted blocks…' : 'Optical link reacquired. Resuming calibration…'); sendAcousticStatus() }
-      else if (calibrationMode.current === 'selected') sendAcousticStatus()
-    }
+    if (connectionMode === 'audio') acceptOpticalObservation(result.header.frameId, symbol.transferId, symbol.blockId, symbol.index)
     fileDecodeStats.current.symbols += 1
     fileDecodeStats.current.lastBlock = symbol.blockId
+    const state = fileState.current
     if (state.id === null) state.id = symbol.transferId
     if (!fileStarted.current && result.header.frameId > 0 && !readCalibrationFrameId(result.header.frameId)) fileStarted.current = performance.now()
     if (symbol.transferId !== state.id || state.verifying || state.storageError) return
-    if (state.received.has(symbol.blockId) || state.blocks.has(symbol.blockId)) { duplicateBlocks.current += 1; wastedFrames.current += 1; return }
+    if (state.received.has(symbol.blockId) || state.blocks.has(symbol.blockId) || state.processing.has(symbol.blockId)) { duplicateBlocks.current += 1; wastedFrames.current += 1; return }
     const cyclic = connectionMode === 'audio' && !!((handshakeRef.current.responseCapabilities || 0) & HANDSHAKE_CAPABILITY_SPARSE_STREAM)
     if (cyclic !== (symbol.visit !== undefined)) { fileDecodeStats.current.invalidSymbols += 1; return }
     if (state.manifest && symbol.blockId >= state.manifest.totalBlocks) return
@@ -468,61 +605,220 @@ export function WorkerOpticalReceiver() {
       collector = new OpticalBlockCollector(recoveryCodec.current, symbol.transferId, symbol.blockId, symbol.visit); state.collectors.set(collectorKey, collector)
     }
     const previousShardCount = collector.count
-    let block = collector.add(symbol)
+    const block = collector.add(symbol)
     if (collector.count > previousShardCount) { fileDecodeStats.current.usefulShards += 1; fileDecodeStats.current.usefulShardBytes += symbol.bytes.length }
     else wastedFrames.current += 1
     if (symbol.blockId === 0) fileDecodeStats.current.manifestShards = collector.count
     if (!block) return
-    if (connectionMode === 'audio') {
-      const handshake = handshakeRef.current
-      if (!handshake.offer || !handshake.material) return
-      try { block = await aesGcmDecrypt(handshake.material.keys.opticalEncryptionKey, cyclic ? cyclicOpticalNonce(handshake.material.keys.sessionBindingKey.slice(0, 4), symbol.blockId, symbol.visit!) : opticalNonce(handshake.material.keys.sessionBindingKey.slice(0, 6), symbol.blockId, 0), block, cyclic ? cyclicOpticalBlockAad(handshake.offer.sessionId, symbol.transferId, symbol.blockId, symbol.visit!) : opticalBlockAad(handshake.offer.sessionId, symbol.transferId, symbol.blockId)); handshake.readyMessage = undefined; handshake.outgoing = [] }
-      catch { state.collectors.delete(collectorKey); wastedFrames.current += collector.count; setFileStatus('Encrypted optical visit failed authentication; continuing cyclic repair'); return }
-    }
-    fileDecodeStats.current.recoveredBlocks += 1
-    state.blocks.set(symbol.blockId, block); for (const key of state.collectors.keys()) if (key.startsWith(`${symbol.blockId}:`)) state.collectors.delete(key)
-    if (symbol.blockId === 0) {
-      const manifest = unpackTransferManifest(block)
-      if (!manifest || manifest.transferId !== state.id) { state.storageError = true; setFileStatus('Invalid optical manifest'); return }
-      state.manifest = manifest
-      state.received.configure(manifest.totalBlocks)
-      for (const [pendingId, pendingBytes] of state.blocks) {
-        const expected = Math.min(manifest.blockBytes, TRANSFER_MANIFEST_BYTES + manifest.archiveBytes - pendingId * manifest.blockBytes)
-        if (pendingId >= manifest.totalBlocks || pendingBytes.length !== expected) state.blocks.delete(pendingId)
-      }
-      setFileProgress(previous => ({ ...previous, totalBlocks: manifest.totalBlocks, totalBytes: manifest.archiveBytes }))
-      state.sinkOpening = true
-      void (async (): Promise<OpticalSink> => {
-        if (diskStorageRef.current === 'opfs' && !cyclic) {
-          try { return await LocalOpticalSink.create(manifest) }
-          catch { /* Retry using local IndexedDB storage. */ }
-        }
-        return IndexedDbOpticalSink.create(manifest)
-      })().then(sink => {
-        if (fileState.current !== state) { void sink.remove(); return }
-        state.sink = sink; state.sinkOpening = false
-        for (const [index, bytes] of state.blocks) queueBlockWrite(state, index, bytes)
-        finishFileIfReady(state)
-      }).catch(error => {
-        if (fileState.current !== state) return
-        state.sinkOpening = false
-        if (cyclic) { state.storageError = true; setFileStatus(`Sparse transfer requires durable IndexedDB storage: ${error instanceof Error ? error.message : 'storage error'}`); return }
-        if (manifest.archiveBytes > 16 * 1024 * 1024) { state.storageError = true; setFileStatus(`Local browser storage unavailable: ${error instanceof Error ? error.message : 'storage error'}`); return }
-        setFileStatus('Local browser storage unavailable; using 16 MiB memory fallback')
-        for (const index of state.blocks.keys()) markStored(state, index)
-        finishFileIfReady(state)
-      })
-    }
-    if (state.sink) queueBlockWrite(state, symbol.blockId, block)
-    else if (!state.sinkOpening && state.manifest) markStored(state, symbol.blockId)
-    else if (state.blocks.size > (state.manifest ? 64 : 32)) {
-      const oldest = state.blocks.keys().next().value!
-      state.blocks.delete(oldest)
-    }
+    await acceptRecoveredBlock(symbol.transferId, symbol.blockId, symbol.visit, block)
+  }
+  const startPhonePairing = async () => {
+    if (connectionMode !== 'audio') return
+    try {
+      const origin = new URL(phoneOrigin)
+      if (origin.protocol !== 'https:' || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('Enter the phone-reachable HTTPS origin, such as https://receiver.local')
+      const response = await fetch('/api/optical-relay/session', { method: 'POST', cache: 'no-store' })
+      if (!response.ok) throw new Error('Local receiver relay is unavailable; start receiver-api on port 3002')
+      const data = await response.json() as { id?: string; token?: string }
+      if (!data.id || !data.token) throw new Error('Local relay returned an invalid pairing session')
+      phoneLastValidAt.current = 0
+      const nextPairing = { id: data.id, token: data.token, url: `${origin.origin}/#phone=${data.id}.${data.token}`, profileId: profile.id }
+      persistDesktopPhonePairing(nextPairing)
+      setPhonePairing(nextPairing)
+      setPhoneCaptureActive(true)
+      setPhoneStatus('Scan this QR code on the phone within five minutes')
+    } catch (error) { setPhoneStatus(error instanceof Error ? error.message : 'Could not create phone pairing') }
+  }
+  const downloadLastPhoneImage = () => {
+    const png = lastPhoneImageRef.current
+    if (!png) return
+    const url = URL.createObjectURL(new Blob([new Uint8Array(png)], { type: 'image/png' }))
+    const anchor = document.createElement('a')
+    anchor.href = url; anchor.download = 'airgaplink-camera-diagnostic.png'; anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000)
   }
   useEffect(() => {
+    if (!phonePairing) return
+    let cancelled = false
+    void prepareZXingModule({ overrides: { locateFile: (path: string) => path.endsWith('.wasm') ? writerWasmUrl : path }, fireImmediately: true }).then(async () => {
+      const output = await writeBarcode(phonePairing.url, { format: 'QRCode', options: 'ecLevel=M', scale: 10, addQuietZones: true })
+      if (cancelled || output.error || !phoneQrCanvasRef.current) return
+      const canvas = phoneQrCanvasRef.current, symbol = output.symbol
+      canvas.width = symbol.width; canvas.height = symbol.height
+      const context = canvas.getContext('2d'); if (!context) return
+      const image = context.createImageData(symbol.width, symbol.height)
+      for (let index = 0; index < symbol.data.length; index += 1) { const value = symbol.data[index], offset = index * 4; image.data[offset] = value; image.data[offset + 1] = value; image.data[offset + 2] = value; image.data[offset + 3] = 255 }
+      context.putImageData(image, 0, 0)
+    }).catch(() => { if (!cancelled) setPhoneStatus('Phone link created, but QR rendering failed; use the pairing link below') })
+    return () => { cancelled = true }
+  }, [phonePairing?.url])
+  useEffect(() => {
+    if (!phonePairing || connectionMode !== 'audio') return
+    let stopped = false, retry: number | null = null, attempts = 0
+    const decoder = new Worker(new URL('./optical-worker.ts', import.meta.url), { type: 'module' })
+    let decoding = false, activeSequence = 0, activeSocket: WebSocket | null = null
+    let remoteFailureStreak = 0, remoteValid = 0, remoteFailed = 0, forceLossless = profile.id === 'binary-320x180'
+    let peer: RTCPeerConnection | null = null, remoteCallback: number | null = null, remoteAnimation = 0
+    const pendingCandidates: RTCIceCandidateInit[] = []
+    const stopRemote = () => {
+      if (remoteCallback !== null && videoRef.current) videoRef.current.cancelVideoFrameCallback(remoteCallback)
+      remoteCallback = null; cancelAnimationFrame(remoteAnimation)
+      peer?.close(); peer = null
+      if (videoRef.current) { videoRef.current.pause(); videoRef.current.srcObject = null }
+      setPhoneVideoActive(false)
+    }
+    const startRemote = async (stream: MediaStream) => {
+      const video = videoRef.current
+      if (!video || stopped) return
+      video.srcObject = stream
+      try { await video.play() } catch { setPhoneStatus('Remote camera track could not play; using image fallback'); return }
+      setPhoneVideoActive(true)
+      setPhoneStatus('WebRTC phone camera live · desktop optical worker decoding')
+      const capture = () => {
+        if (stopped || decoding || !video.videoWidth) return
+        decoding = true; activeSequence = (activeSequence + 1) >>> 0; activeSocket = null
+        const sequence = activeSequence
+        void createImageBitmap(video).then(bitmap => {
+          if (stopped) { bitmap.close(); decoding = false; return }
+          decoder.postMessage({ bitmap, profileId: profile.id, sentAt: sequence, phoneCapture: true }, [bitmap])
+        }).catch(() => { decoding = false; setPhoneStatus('Remote video frame capture failed') })
+      }
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        const observe = () => { if (stopped) return; capture(); remoteCallback = video.requestVideoFrameCallback(observe) }
+        remoteCallback = video.requestVideoFrameCallback(observe)
+      } else {
+        const observe = () => { if (stopped) return; capture(); remoteAnimation = requestAnimationFrame(observe) }
+        remoteAnimation = requestAnimationFrame(observe)
+      }
+    }
+    const acknowledge = (socket: WebSocket | null, sequence: number, result?: OpticalImageDecode) => {
+      if (socket?.readyState !== WebSocket.OPEN) return
+      socket.send(encodePhoneRelayMessage({ kind: 'camera-ack', sequence, valid: !!result?.ok, decodeReason: Math.max(0, PHONE_DECODE_REASONS.findIndex(value => value === (result?.ok ? 'valid' : result?.reason || 'finder'))), frameId: result?.ok ? result.header.frameId : 0 }))
+    }
+    decoder.onmessage = (event: MessageEvent<{ result?: OpticalImageDecode; sentAt?: number; finderStage?: string; sourceWidth?: number; sourceHeight?: number; decodeMs?: number; acquireMs?: number; drawMs?: number; readMs?: number; sampleMs?: number; crcMs?: number; pixelPath?: string }>) => {
+      if (event.data.sentAt !== activeSequence || !decoding) return
+      decoding = false
+      const result = event.data.result
+      if (result) {
+        if (result.ok) remoteValid += 1; else remoteFailed += 1
+        if (!activeSocket && peer?.connectionState === 'connected') {
+          if (result.ok) remoteFailureStreak = 0
+          else remoteFailureStreak += 1
+          if (remoteFailureStreak >= 8 && !forceLossless) {
+            forceLossless = true
+            if (phoneAuthenticatedRef.current && phoneSocketRef.current?.readyState === WebSocket.OPEN) phoneSocketRef.current.send(encodePhoneRelayMessage({ kind: 'camera-path', lossless: true }))
+            stopRemote()
+            setPhoneStatus('WebRTC frames repeatedly failed optical validation; requesting lossless phone images')
+          }
+        }
+        if (!result.ok && result.reason === 'payload-crc' && result.header?.frameId === 0 && result.header.blockId === 0 && result.header.payloadLength > 512 && handshakeRef.current.state === 'WAITING_FOR_SENDER') setFileStatus('Sender alignment block is visible, but its optical payload fails CRC; waiting for a clean camera frame before calibration.')
+        const boundary = result.boundary
+        const dimensions = frameDimensions(profile)
+        const pixelsPerCell = boundary ? Math.min(Math.hypot(boundary.topRight.x - boundary.topLeft.x, boundary.topRight.y - boundary.topLeft.y) / dimensions.width, Math.hypot(boundary.bottomLeft.x - boundary.topLeft.x, boundary.bottomLeft.y - boundary.topLeft.y) / dimensions.height) : 0
+        setPhoneDecode(previous => ({ finder: event.data.finderStage || 'unknown', reason: result.ok ? 'CRC-valid' : result.reason, width: event.data.sourceWidth || 0, height: event.data.sourceHeight || 0, pixelsPerCell, decodeMs: event.data.decodeMs || 0, valid: previous.valid + Number(result.ok), failed: previous.failed + Number(!result.ok) }))
+        setStatus(previous => ({ ...previous, camera: `${event.data.sourceWidth || 0} × ${event.data.sourceHeight || 0} phone ${activeSocket ? 'lossless' : 'WebRTC'}`, finder: event.data.finderStage || 'unknown', reason: result.ok ? 'CRC-valid phone optical frame' : result.reason, frame: result.ok ? result.header.frameId : -1, valid: remoteValid, failed: remoteFailed, decodeMs: event.data.decodeMs || 0, acquireMs: event.data.acquireMs || 0, drawMs: event.data.drawMs || 0, readMs: event.data.readMs || 0, sampleMs: event.data.sampleMs || 0, crcMs: event.data.crcMs || 0, pixelPath: event.data.pixelPath || 'Canvas RGBA', pixelsPerCell, boundary: boundary ? `${Math.round(boundary.topLeft.x)},${Math.round(boundary.topLeft.y)} → ${Math.round(boundary.bottomRight.x)},${Math.round(boundary.bottomRight.y)}` : 'searching', fileSymbols: fileDecodeStats.current.symbols, invalidSymbols: fileDecodeStats.current.invalidSymbols, sessionRejects: fileDecodeStats.current.sessionRejects, manifestShards: fileDecodeStats.current.manifestShards, lastFileBlock: fileDecodeStats.current.lastBlock }))
+        if (result.ok) phoneLastValidAt.current = performance.now()
+        if (task === 'file') void acceptFileFrame(result)
+        setPhoneStatus(result.ok ? `Desktop decoded phone camera frame ${result.header.frameId}` : `Desktop reading phone camera · ${result.reason}`)
+      }
+      acknowledge(activeSocket, activeSequence, result)
+    }
+    const sendConfig = (socket: WebSocket) => {
+      if (socket.readyState === WebSocket.OPEN && phoneAuthenticatedRef.current) socket.send(encodePhoneRelayMessage({ kind: 'config', profileId: opticalProfileNumber(profile), transferId: audioSessionIdRef.current }))
+    }
+    const connect = () => {
+      if (stopped) return
+      const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/optical-relay`)
+      socket.binaryType = 'arraybuffer'; phoneSocketRef.current = socket
+      socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', role: 'desktop', id: phonePairing.id, token: phonePairing.token }))
+      socket.onmessage = event => {
+        if (typeof event.data === 'string') {
+          try {
+            const status = JSON.parse(event.data) as { type?: string; connected?: boolean; kind?: string; sdp?: string; candidate?: RTCIceCandidateInit }
+            if (status.type === 'authenticated') { phoneAuthenticatedRef.current = true; attempts = 0; sendConfig(socket); setPhoneStatus('Phone pairing ready; waiting for phone camera') }
+            else if (status.type === 'peer') { if (!status.connected) stopRemote(); setPhoneStatus(status.connected ? 'Phone linked · desktop webcam off; start its rear camera' : 'Phone disconnected · reconnecting; desktop webcam remains off'); if (status.connected) sendConfig(socket) }
+            else if (status.type === 'webrtc-signal' && status.kind === 'offer' && typeof status.sdp === 'string' && typeof RTCPeerConnection !== 'undefined') {
+              if (forceLossless) { if (socket.readyState === WebSocket.OPEN) socket.send(encodePhoneRelayMessage({ kind: 'camera-path', lossless: true })); return }
+              stopRemote()
+              peer = new RTCPeerConnection({ iceServers: [] })
+              const current = peer
+              current.onicecandidate = candidate => { if (candidate.candidate && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'webrtc-signal', kind: 'candidate', candidate: candidate.candidate.toJSON() })) }
+              current.ontrack = track => { if (track.streams[0]) void startRemote(track.streams[0]) }
+              current.onconnectionstatechange = () => { if (peer === current && (current.connectionState === 'failed' || current.connectionState === 'closed')) { stopRemote(); setPhoneStatus('WebRTC path unavailable · image fallback active') } }
+              void current.setRemoteDescription({ type: 'offer', sdp: status.sdp }).then(async () => {
+                for (const candidate of pendingCandidates.splice(0)) await current.addIceCandidate(candidate).catch(() => {})
+                await current.setLocalDescription(await current.createAnswer())
+                if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'webrtc-signal', kind: 'answer', sdp: current.localDescription?.sdp }))
+              }).catch(() => { stopRemote(); setPhoneStatus('WebRTC offer rejected · image fallback active') })
+            }
+            else if (status.type === 'webrtc-signal' && status.kind === 'candidate' && status.candidate) {
+              if (peer?.remoteDescription) void peer.addIceCandidate(status.candidate).catch(() => {})
+              else pendingCandidates.push(status.candidate)
+            }
+          } catch { /* Ignore malformed relay status. */ }
+          return
+        }
+        const message = decodePhoneRelayMessage(new Uint8Array(event.data as ArrayBuffer))
+        if (!message) return
+        if (message.kind === 'camera-frame') {
+          if (message.profileId !== opticalProfileNumber(profile) || decoding) { acknowledge(socket, message.sequence); return }
+          lastPhoneImageRef.current = message.png
+          if (!hasPhoneImage) setHasPhoneImage(true)
+          decoding = true; activeSequence = message.sequence; activeSocket = socket
+          void createImageBitmap(new Blob([new Uint8Array(message.png)], { type: 'image/png' })).then(bitmap => {
+            if (stopped || socket.readyState !== WebSocket.OPEN) { bitmap.close(); decoding = false; return }
+            decoder.postMessage({ bitmap, profileId: profile.id, sentAt: message.sequence, phoneCapture: true }, [bitmap])
+          }).catch(() => { decoding = false; acknowledge(socket, message.sequence); setPhoneStatus('Desktop could not open phone camera image') })
+        }
+        else if (message.kind === 'control' && message.profileId === opticalProfileNumber(profile)) receiveHandshakeFrame(message.payload)
+        else if (message.kind === 'observation' && message.profileId === opticalProfileNumber(profile) && message.transferId === audioSessionIdRef.current) acceptOpticalObservation(message.frameId, message.transferId, message.blockId, message.shardIndex)
+        else if (message.kind === 'block' && message.profileId === opticalProfileNumber(profile) && message.transferId === audioSessionIdRef.current) void acceptRecoveredBlock(message.transferId, message.blockId, message.visit, message.bytes)
+        else if (message.kind === 'telemetry') {
+          const now = performance.now()
+          phoneLastTelemetryAt.current = now; setPhoneTelemetry({ ...message, decodeReason: message.decodeReason ?? 0, finderStage: message.finderStage ?? 0, pixelsPerCell: message.pixelsPerCell ?? 0, capturePath: message.capturePath ?? 0 })
+          if (message.validFps >= 1) phoneLastValidAt.current = now
+          const phoneDecoding = message.processedFps > 0.1
+          if (peer?.connectionState !== 'connected') setPhoneStatus(phoneDecoding ? 'Phone camera images arriving · desktop decoding; desktop webcam off' : 'Phone linked · waiting for camera frames; desktop webcam off')
+          setPaceDiagnostics({ cameraFps: message.cameraFps, validFps: message.validFps, uniqueFps: message.uniqueFps, invalidFps: Math.max(0, message.processedFps - message.validFps), senderFps: message.uniqueFps, usefulKBps: 0, storedKBps: 0 })
+          if (calibrationMode.current === 'transferring') {
+            const history = phonePaceHistory.current
+            if (history.length && (message.usefulShards < history[history.length - 1].usefulShards || message.recoveredBlocks < history[history.length - 1].recoveredBlocks)) history.length = 0
+            history.push({ at: now, usefulShards: message.capturePath === 4 ? fileDecodeStats.current.usefulShards : message.usefulShards, usefulShardBytes: message.capturePath === 4 ? fileDecodeStats.current.usefulShardBytes : message.usefulShardBytes, recoveredBlocks: message.capturePath === 4 ? fileDecodeStats.current.recoveredBlocks : message.recoveredBlocks, storedBytes: fileState.current.receivedBytes })
+            while (history.length > 1 && now - history[0].at > 5000) history.shift()
+            if (history.length > 1) {
+              const first = history[0], last = history[history.length - 1], seconds = (last.at - first.at) / 1000
+              if (seconds >= 4) {
+                const usefulShards = last.usefulShards - first.usefulShards, usefulShardBytes = last.usefulShardBytes - first.usefulShardBytes, storedBytes = last.storedBytes - first.storedBytes
+                const code = adaptivePace.current.update({ processedFrames: Math.round(message.processedFps * seconds), validFrames: Math.round(message.validFps * seconds), uniqueFrames: Math.min(Math.round(message.validFps * seconds), Math.round(message.uniqueFps * seconds)), usefulShards, usefulShardBytes, recoveredBlocks: last.recoveredBlocks - first.recoveredBlocks, storedBytes, observedSenderFps: message.uniqueFps, spanSeconds: seconds }, now)
+                if (code !== pacingCode.current) { pacingCode.current = code; setRecommendedPace(opticalPaceFps(code)) }
+                setPaceDiagnostics({ cameraFps: message.cameraFps, validFps: message.validFps, uniqueFps: message.uniqueFps, invalidFps: Math.max(0, message.processedFps - message.validFps), senderFps: message.uniqueFps, usefulKBps: usefulShardBytes / seconds / 1024, storedKBps: storedBytes / seconds / 1024 })
+              }
+            }
+          }
+        }
+      }
+      socket.onclose = event => {
+        stopRemote()
+        if (phoneSocketRef.current === socket) phoneSocketRef.current = null
+        phoneAuthenticatedRef.current = false; phoneLastValidAt.current = 0
+        if (stopped) return
+        if (event.code === 1008) { setPhoneStatus('Phone pairing expired; create a new QR code'); return }
+        setPhoneStatus('Phone relay disconnected; retrying…')
+        retry = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** Math.min(attempts++, 5)))
+      }
+      socket.onerror = () => socket.close()
+    }
+    connect()
+    return () => { stopped = true; stopRemote(); decoder.terminate(); if (retry !== null) clearTimeout(retry); socketRefCleanup() }
+    function socketRefCleanup() { phoneAuthenticatedRef.current = false; phoneSocketRef.current?.close(); phoneSocketRef.current = null }
+  }, [phonePairing?.id, profile, connectionMode])
+  useEffect(() => {
+    const socket = phoneSocketRef.current
+    if (phoneAuthenticatedRef.current && socket?.readyState === WebSocket.OPEN) socket.send(encodePhoneRelayMessage({ kind: 'config', profileId: opticalProfileNumber(profile), transferId: audioSessionIdRef.current }))
+  }, [profile, audioSessionId])
+  useEffect(() => {
     const video = videoRef.current
-    if (!video || !cameraActive) return
+    if (!video || !cameraActive || phoneCaptureActive) return
     let cancelled = false, stream: MediaStream | undefined, animation = 0, videoCallback: number | null = null, busy = false, lastCapture = 0
     const cameraFrames = new CameraFrameMeter()
     const worker = new Worker(new URL('./optical-worker.ts', import.meta.url), { type: 'module' })
@@ -614,7 +910,7 @@ export function WorkerOpticalReceiver() {
       } catch { setStatus(previous => ({ ...previous, reason: 'Camera permission or worker unavailable' })) }
     })()
     return () => { cancelled = true; cancelAnimationFrame(animation); if (videoCallback !== null) video.cancelVideoFrameCallback(videoCallback); cameraTrackRef.current = null; stream?.getTracks().forEach(track => track.stop()); video.pause(); video.srcObject = null; worker.terminate(); workerRef.current = null }
-  }, [profile, task, connectionMode, audioSessionId, cameraActive])
+  }, [profile, task, connectionMode, audioSessionId, cameraActive, phoneCaptureActive])
   useEffect(() => {
     if (cameraActive) return
     const grid = gridRef.current
@@ -638,12 +934,16 @@ export function WorkerOpticalReceiver() {
     <h1>High-Speed Optical</h1>
     <p>Point this camera at the sender screen. This device sends its handshake response through the speaker; the sender listens with its microphone. Match the sender profile.</p>
     <nav><button onClick={() => { resetFile(); setTask('file') }}>Receive files</button> <button onClick={() => { resetFile(); setTask('benchmark') }}>Link benchmark</button></nav>
-    {task === 'file' && <label>Connection <select value={connectionMode} disabled={!!speaker.current || !!fileState.current.manifest} onChange={event => { resetFile(); setConnectionMode(event.target.value as ConnectionMode); setAudioPacketsSent(0) }}><option value="direct">Direct optical (existing)</option><option value="audio">Audio pairing + ACK</option></select></label>}
+    {task === 'file' && <label>Connection <select value={connectionMode} disabled={!!speaker.current || !!fileState.current.manifest} onChange={event => { resetFile(); if (event.target.value === 'direct') { phoneSocketRef.current?.close(); persistDesktopPhonePairing(null); setPhonePairing(null); setPhoneCaptureActive(false) } setConnectionMode(event.target.value as ConnectionMode); setAudioPacketsSent(0) }}><option value="direct">Direct optical (existing)</option><option value="audio">Audio pairing + ACK</option></select></label>}
     {task === 'file' && connectionMode === 'audio' && <p><label><input type="checkbox" checked={handsFreePairing} onChange={event => setHandsFreePairing(event.target.checked)} /> Hands-free code continuation after 3 seconds (encrypted, but peer identity not verified)</label></p>}
-    <label>Optical profile <select value={profile.id} onChange={event => { resetFile(); setProfile(OPTICAL_PROFILES.find(item => item.id === event.target.value) || DEBUG_PROFILE) }}>{OPTICAL_PROFILES.map(item => <option key={item.id} value={item.id}>{item.gridWidth}×{item.gridHeight} / {item.colorMode === 'rgb' ? 'RGB + black · robust 2×2 (experimental)' : item.bitsPerSymbol === 2 ? '4-level gray (experimental)' : item.id === 'binary-320x180' ? 'dense binary · 2× widescreen payload (experimental)' : item.id === 'binary-240x120' ? 'binary widescreen (+20% cells; test camera)' : 'binary'}</option>)}</select></label>
+    <label>Optical profile <select value={profile.id} onChange={event => { resetFile(); const nextProfile = OPTICAL_PROFILES.find(item => item.id === event.target.value) || DEBUG_PROFILE; setProfile(nextProfile); setPhonePairing(current => { if (current) persistDesktopPhonePairing({ ...current, profileId: nextProfile.id }); return current ? { ...current, profileId: nextProfile.id } : null }) }}>{OPTICAL_PROFILES.map(item => <option key={item.id} value={item.id}>{item.gridWidth}×{item.gridHeight} / {item.colorMode === 'rgb' ? 'RGB + black · robust 2×2 (experimental)' : item.bitsPerSymbol === 2 ? '4-level gray (experimental)' : item.id === 'binary-320x180' ? 'dense binary · 2× widescreen payload (experimental)' : item.id === 'binary-240x120' ? 'binary widescreen (+20% cells; test camera)' : 'binary'}</option>)}</select></label>
+    {task === 'file' && connectionMode === 'audio' && <section style={{ margin: '16px 0', padding: 12, border: '1px solid #888', borderRadius: 8 }}><h2>Phone optical camera (local relay)</h2><p>The phone streams its camera track over WebRTC when available and falls back to camera images. This desktop alone detects the optical grid, handles CRC/FEC, performs the acoustic handshake and AES-GCM authentication, and stores recovered blocks.</p><label>Phone-reachable HTTPS origin <input value={phoneOrigin} onChange={event => setPhoneOrigin(event.target.value)} placeholder="https://receiver.local" style={{ width: 'min(100%, 360px)' }} /></label>{' '}<button onClick={() => void startPhonePairing()}>Create phone pairing QR</button>{phonePairing && <><p>{phoneStatus}</p><canvas ref={phoneQrCanvasRef} aria-label="Short-lived phone pairing QR code" style={{ display: 'block', width: 560, height: 'auto', maxWidth: 'calc(100% - 48px)', padding: 24, background: '#fff', imageRendering: 'pixelated', border: '1px solid #777', borderRadius: 4 }} /><p>Scan the entire QR, including the white border. If scanning fails, copy the <strong>full</strong> link—session ID alone will not connect.</p><button onClick={() => { if (!navigator.clipboard?.writeText) { setPhoneStatus('Clipboard unavailable; select the full link below'); return } void navigator.clipboard.writeText(phonePairing.url).then(() => setPhoneStatus('Full phone link copied; open it on the phone')).catch(() => setPhoneStatus('Clipboard unavailable; select the full phone link below')) }}>Copy full phone link</button><p><input aria-label="Full phone pairing link" readOnly value={phonePairing.url} onFocus={event => event.target.select()} style={{ width: 'min(100%, 560px)' }} /></p><p><a href={phonePairing.url}>Open pairing page</a> · QR expires after five minutes if unused. The URL fragment is removed from the phone address bar after opening.</p><button onClick={() => { phoneSocketRef.current?.close(); persistDesktopPhonePairing(null); setPhonePairing(null); setPhoneCaptureActive(false); setPhoneStatus('Phone capture not paired') }}>Disconnect phone</button></>}{!phonePairing && <p>{phoneStatus}</p>}{phonePairing && <p>Phone camera {phoneTelemetry.cameraFps.toFixed(1)} FPS · images sent {phoneTelemetry.processedFps.toFixed(1)}/s · desktop valid {phoneTelemetry.validFps.toFixed(1)}/s · unique display frames {phoneTelemetry.uniqueFps.toFixed(1)}/s · rejected {phoneTelemetry.failures}</p>}<p>Use a phone-trusted local HTTPS address and keep the desktop speaker near the sender. The desktop webcam stays off during phone reconnects; use Disconnect phone to switch back to the desktop camera.</p></section>}
+    {task === 'file' && connectionMode === 'audio' && phonePairing && <p>Desktop phone-image decoder: {phoneDecode.reason} · finder {phoneDecode.finder} · image {phoneDecode.width}×{phoneDecode.height} · {phoneDecode.pixelsPerCell.toFixed(1)} camera pixels/cell · decode {phoneDecode.decodeMs.toFixed(0)} ms · CRC-valid/rejected {phoneDecode.valid}/{phoneDecode.failed} · {PHONE_CAPTURE_PATHS[phoneTelemetry.capturePath] || 'unknown'}{phoneDecode.failed > 3 && phoneDecode.valid === 0 ? ` · ${phoneDecode.pixelsPerCell > 0 && phoneDecode.pixelsPerCell < 2 ? 'Grid too small in the camera image; try the larger-cell profile.' : phoneDecode.reason === 'metadata' ? 'Finder corners seen, but optical profile/header does not match.' : phoneDecode.reason === 'payload-crc' ? 'Header seen; sampling is correcting phase/lens distortion.' : 'Searching for all four finder markers.'}` : ''}</p>}
+    {task === 'file' && connectionMode === 'audio' && phonePairing && <p>{handshakeRef.current.responseCapabilities && (handshakeRef.current.responseCapabilities & HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS) ? 'Phone-safe smaller optical shards authenticated in handshake' : 'Standard optical shard size; phone-safe mode requires current sender and receiver assets'}</p>}
     <button onClick={() => workerRef.current?.postMessage({ reset: true, profileId: profile.id })}>Re-detect boundary</button>
+    {phonePairing && hasPhoneImage && <button onClick={downloadLastPhoneImage}>Save last phone camera frame locally for diagnosis</button>}
     <button onClick={exportMetrics}>Export metrics JSON</button>
-    {task === 'file' && <><button onClick={() => void startSpeaker()} disabled={!!speaker.current || verified.current || (connectionMode === 'audio' && diskStorage === 'checking')}>{connectionMode === 'audio' ? 'Enable receiver speaker' : 'Enable speaker feedback'}</button>{connectionMode === 'audio' && <p>Enable the speaker, then aim this camera at the sender’s full-screen optical offer. The receiver does not need a microphone.</p>}{connectionMode === 'audio' && handshakeState === 'AWAITING_USER_VERIFICATION' && <p role="alert">Pairing code on both devices: <strong style={{ fontSize: '1.4em' }}>{sas}</strong><br />{handsFreePairing ? `Continuing in ${verificationSeconds}s · peer identity unverified` : 'Compare the codes before accepting.'}<br /><button onClick={() => acceptSas(true)}>Codes match</button> <button onClick={cancelHandshake}>Cancel</button></p>}<p>{speakerStatus} · {audioPacketsSent} control packets sent{connectionMode === 'audio' && ` · secure handshake ${handshakeState} · ${handshakeRef.current.selectedMode === 32 ? 'OFDM' : `${handshakeRef.current.selectedMode || 8}-FSK`}${responseRounds > 0 && handshakeState !== 'ESTABLISHED' ? ` · audio response round ${responseRounds}` : ''}${handshakeRef.current.selectivePackets ? ` · ${handshakeRef.current.selectivePackets} selectively replayed` : ''} · scheduled handshake airtime ${(handshakeRef.current.acousticAirtimeSeconds || 0).toFixed(1)} s${handshakeState === 'ESTABLISHED' ? ` · Encrypted · AES-256-GCM · ${sasManuallyVerifiedRef.current ? 'code manually confirmed' : 'peer identity unverified'}` : ''} · optical link ${opticalLink} · recommended optical pace ${recommendedPace || 'measuring'} FPS`}</p><p>{fileStatus} {downloadUrl && <a href={downloadUrl} download="optical-transfer.zip">Download verified ZIP</a>}</p>{!cameraActive && <p>Camera off after verified transfer. Select Receive files to start another.</p>}</>}
+    {task === 'file' && <><button onClick={() => void startSpeaker()} disabled={!!speaker.current || verified.current || (connectionMode === 'audio' && diskStorage === 'checking')}>{connectionMode === 'audio' ? 'Enable receiver speaker' : 'Enable speaker feedback'}</button>{connectionMode === 'audio' && <><button onClick={() => void playSpeakerTest()}>Test desktop speaker</button>{speaker.current && speakerContextState !== 'running' && <button onClick={() => void resumeSpeaker()}>Resume speaker</button>}<span> Audio {speakerContextState} · {audioPacketsPlayed} buffers played</span><p>The desktop speaker sends the handshake; the phone only captures images.</p></>}{connectionMode === 'audio' && handshakeState === 'AWAITING_USER_VERIFICATION' && <p role="alert">Pairing code on both devices: <strong style={{ fontSize: '1.4em' }}>{sas}</strong><br />{handsFreePairing ? `Continuing in ${verificationSeconds}s · peer identity unverified` : 'Compare the codes before accepting.'}<br /><button onClick={() => acceptSas(true)}>Codes match</button> <button onClick={cancelHandshake}>Cancel</button></p>}<p>{speakerStatus} · {audioPacketsSent} control packets scheduled{connectionMode === 'audio' && ` · secure handshake ${handshakeState} · ${handshakeRef.current.selectedMode === 32 ? 'OFDM' : `${handshakeRef.current.selectedMode || 8}-FSK`}${responseRounds > 0 && handshakeState !== 'ESTABLISHED' ? ` · audio response round ${responseRounds}` : ''}${handshakeRef.current.selectivePackets ? ` · ${handshakeRef.current.selectivePackets} selectively replayed` : ''} · scheduled handshake airtime ${(handshakeRef.current.acousticAirtimeSeconds || 0).toFixed(1)} s${handshakeState === 'ESTABLISHED' ? ` · Encrypted · AES-256-GCM · ${sasManuallyVerifiedRef.current ? 'code manually confirmed' : 'peer identity unverified'}` : ''} · optical link ${opticalLink} · recommended optical pace ${recommendedPace || 'measuring'} FPS`}</p><p>{fileStatus} {downloadUrl && <a href={downloadUrl} download="optical-transfer.zip">Download verified ZIP</a>}</p>{!cameraActive && <p>Camera off after verified transfer. Select Receive files to start another.</p>}</>}
     {task === 'file' && <p>Local ZIP storage: {diskStorage === 'checking' ? 'checking…' : diskStorage === 'opfs' ? 'browser-private file system' : diskStorage === 'indexeddb' ? 'IndexedDB blocks' : 'memory only'}</p>}
     {task === 'file' && diskStorage === 'memory' && <p role="alert">This browser has no writable local storage for large ZIPs. It can receive up to 16 MiB in memory. Use a normal browser window with IndexedDB or browser-private file storage for larger transfers. {storageProblem}</p>}
     {task === 'file' && fileProgress.totalBytes === 0 && <p>0 ZIP bytes received · {status.sessionRejects > 0 ? 'optical frames belong to a different audio session; re-pair the sender' : status.manifestShards > 0 ? `waiting for transfer manifest (${status.manifestShards} of 8 distinct symbols)` : 'waiting for transfer manifest'}</p>}
@@ -653,7 +953,7 @@ export function WorkerOpticalReceiver() {
     {task === 'file' && <p>Optical payload: {opticalRecovery.payloadBytes || 'unknown'} bytes · last readable header frame {opticalRecovery.headerFrame < 0 ? '—' : opticalRecovery.headerFrame} · repeat candidates {opticalRecovery.candidates} · CRC-verified temporal recoveries {opticalRecovery.recovered}</p>}
     {task === 'file' && connectionMode === 'audio' && calibrationMode.current === 'transferring' && <p>Recent optical delivery: camera {paceDiagnostics.cameraFps ? paceDiagnostics.cameraFps.toFixed(1) : 'unavailable'} / processed {status.processingFps.toFixed(1)} / valid {paceDiagnostics.validFps.toFixed(1)} FPS · new FEC {paceDiagnostics.usefulKBps.toFixed(1)} KB/s · stored ZIP {paceDiagnostics.storedKBps.toFixed(1)} KB/s · sender observed {paceDiagnostics.senderFps.toFixed(1)} FPS · {paceDiagnostics.invalidFps.toFixed(1)} invalid FPS · requesting {recommendedPace} FPS over sound</p>}
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 20, marginTop: 16 }}>
-      <video ref={videoRef} muted playsInline style={{ width: '100%', background: '#111' }} />
+      <div>{phoneCaptureActive && <p>{phoneVideoActive ? 'Live phone webcam stream · desktop decoding · desktop webcam off' : 'Phone paired · desktop webcam off. Waiting for WebRTC video; image fallback remains available.'}</p>}<video ref={videoRef} muted playsInline style={{ display: 'block', width: '100%', background: '#111' }} /></div>
       <aside><h2>Diagnostics</h2><p>{status.reason}</p>{profile.bitsPerSymbol === 2 && status.pixelsPerCell > 0 && status.pixelsPerCell < 4 && <p role="alert">Four-level grid is too small in the camera image. Move closer or use the same binary profile on both devices.</p>}{profile.id === 'binary-320x180' && status.pixelsPerCell > 0 && status.pixelsPerCell < 4 && <p role="alert">Dense binary cells occupy fewer than four camera pixels. Move closer or return both devices to 240×120 if CRC-valid frames drop.</p>}<dl><dt>Camera</dt><dd>{status.camera}</dd><dt>Finder</dt><dd>{status.finder}</dd><dt>Detected boundary</dt><dd>{status.boundary}</dd><dt>Camera pixels / cell</dt><dd>{status.pixelsPerCell ? `${status.pixelsPerCell.toFixed(1)}${status.pixelsPerCell < 6 ? ' · move camera closer' : ''}` : '—'}</dd><dt>Frame</dt><dd>{status.frame < 0 ? '—' : status.frame}</dd><dt>Processed / valid FPS</dt><dd>{status.processingFps.toFixed(1)} / {status.validFps.toFixed(1)}</dd><dt>Decode time</dt><dd>{status.decodeMs.toFixed(1)} ms</dd><dt>Pixel path</dt><dd>{status.pixelPath}</dd><dt>GPU candidate</dt><dd>{status.gpuDiagnostic}</dd><dt>Stages</dt><dd>find {status.acquireMs.toFixed(0)} · draw {status.drawMs.toFixed(0)} · read {status.readMs.toFixed(0)} · sample {status.sampleMs.toFixed(0)} · CRC {status.crcMs.toFixed(0)} ms</dd><dt>Unique optical bytes</dt><dd>{status.usefulKBps.toFixed(1)} KB/s</dd><dt>Valid / failed</dt><dd>{status.valid} / {status.failed}</dd><dt>Unique frames</dt><dd>{status.unique}</dd>{task === 'file' && <><dt>File symbols decoded</dt><dd>{status.fileSymbols}</dd><dt>Wrong audio session</dt><dd>{status.sessionRejects}</dd><dt>Invalid file symbols</dt><dd>{status.invalidSymbols}</dd><dt>Manifest shards</dt><dd>{status.manifestShards} / 8</dd><dt>Last file block</dt><dd>{status.lastFileBlock < 0 ? '—' : status.lastFileBlock}</dd></>}<dt>Symbol confidence</dt><dd>{(status.confidence * 100).toFixed(0)}%</dd>{task === 'benchmark' && <><dt>Benchmark payload</dt><dd>{status.deterministic ? 'verified' : '—'}</dd></>}</dl><canvas ref={gridRef} aria-label="Sampled optical grid" style={{ width: '100%', imageRendering: 'pixelated', border: '1px solid #777' }} /></aside>
     </div>
   </main>

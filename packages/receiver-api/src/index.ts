@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto'
 import express from 'express'
 import cors from 'cors'
+import { attachOpticalRelay } from './optical-relay'
 
 const app: express.Express = express()
 const PORT = Number(process.env.RECEIVER_API_PORT || 3002)
@@ -79,5 +80,6 @@ app.post('/api/receive', (req, res) => {
   res.json({ receivedChunks: transfer.chunks.size, totalChunks: transfer.totalChunks, complete: session.status === 'complete' })
 })
 app.get('/api/session/:sessionId/archive', (req, res) => { const archive = sessions.get(req.params.sessionId)?.transfer?.completedArchive; if (!archive) return res.status(409).json({ error: 'Archive is not complete' }); res.type('application/zip').attachment(`qr-transfer-${req.params.sessionId}.zip`).send(archive) })
-app.listen(PORT, () => console.log(`Receiver API running on port ${PORT}`))
+const server = app.listen(PORT, () => console.log(`Receiver API running on port ${PORT}`))
+attachOpticalRelay(app, server)
 export default app

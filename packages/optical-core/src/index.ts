@@ -18,10 +18,11 @@ export { OPTICAL_QUALITY_VERSION, OPTICAL_QUALITY_CRC_FAILURE, OPTICAL_OFFER_HOL
 export type { ControlPacket } from './control.ts'
 export { CRYPTO_PROTOCOL_VERSION, SESSION_ID_BYTES, NONCE_BYTES, X25519_KEY_BYTES, generateEphemeralKeyPair, x25519SharedSecret, deriveSessionKeys, generateIdentityKeyPair, signIdentity, verifyIdentity, opticalNonce, opticalBlockAad, cyclicOpticalNonce, cyclicOpticalBlockAad, aesGcmEncrypt, aesGcmDecrypt, OpticalBlockEncryptor, CyclicOpticalBlockEncryptor, zeroBytes } from './crypto.ts'
 export type { EphemeralKeyPair, SessionKeys } from './crypto.ts'
-export { HANDSHAKE_CAPABILITY_IDENTITY, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_FAST_READY, HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_DENSE_RESPONSE, HANDSHAKE_CAPABILITY_RESPONSE_PARITY, HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO, HANDSHAKE_CAPABILITY_HEX_FSK, HANDSHAKE_CAPABILITY_OFDM, HANDSHAKE_CAPABILITY_SPARSE_STREAM, HANDSHAKE_NACK_MAGIC, HANDSHAKE_NACK_LEGACY, HANDSHAKE_NACK_DENSE, HANDSHAKE_OFFER_MAGIC, KEY_CONFIRM_MAGIC, KEY_CONFIRM_AUDIO_MAGIC, HANDSHAKE_RESPONSE_MAGIC, HANDSHAKE_READY_MAGIC, HANDSHAKE_READY_COMPACT_MAGIC, canonicalTranscript, sessionSalt, deriveHandshakeMaterial, makeOffer, makeResponse, transcriptBinding, sasCode, keyConfirm, keyConfirmAudioMode, transferCompletionTag, readyConfirm, readyConfirmCompact, readyConfirmFast, verifyReadyConfirm, equalBytes, encodeHandshakeOffer, decodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, decodeKeyConfirm, encodeHandshakeNack, decodeHandshakeNack, decodeReadyConfirm, encodeReadyConfirm, encodeReadyConfirmCompact, encodeHandshakeResponse, decodeHandshakeResponse, type AcousticToneCount } from './handshake.ts'
+export { HANDSHAKE_CAPABILITY_IDENTITY, HANDSHAKE_CAPABILITY_QUAD_FSK, HANDSHAKE_CAPABILITY_QUAD_CONTROL, HANDSHAKE_CAPABILITY_OCTAL_FSK, HANDSHAKE_CAPABILITY_OCTAL_CONTROL, HANDSHAKE_CAPABILITY_COMPACT_READY, HANDSHAKE_CAPABILITY_FAST_READY, HANDSHAKE_CAPABILITY_FAST_OCTAL, HANDSHAKE_CAPABILITY_DENSE_RESPONSE, HANDSHAKE_CAPABILITY_RESPONSE_PARITY, HANDSHAKE_CAPABILITY_ADAPTIVE_AUDIO, HANDSHAKE_CAPABILITY_HEX_FSK, HANDSHAKE_CAPABILITY_OFDM, HANDSHAKE_CAPABILITY_SPARSE_STREAM, HANDSHAKE_CAPABILITY_MANIFEST_READY, HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS, HANDSHAKE_CAPABILITY_RECEIVER_PROFILE, HANDSHAKE_NACK_MAGIC, HANDSHAKE_NACK_LEGACY, HANDSHAKE_NACK_DENSE, HANDSHAKE_OFFER_MAGIC, KEY_CONFIRM_MAGIC, KEY_CONFIRM_AUDIO_MAGIC, HANDSHAKE_RESPONSE_MAGIC, HANDSHAKE_READY_MAGIC, HANDSHAKE_READY_COMPACT_MAGIC, canonicalTranscript, sessionSalt, deriveHandshakeMaterial, makeOffer, makeResponse, transcriptBinding, sasCode, keyConfirm, keyConfirmAudioMode, manifestReadyTag, verifyManifestReadyTag, transferCompletionTag, readyConfirm, readyConfirmCompact, readyConfirmFast, verifyReadyConfirm, equalBytes, encodeHandshakeOffer, decodeHandshakeOffer, encodeKeyConfirm, encodeKeyConfirmAudioMode, decodeKeyConfirm, encodeHandshakeNack, decodeHandshakeNack, decodeReadyConfirm, encodeReadyConfirm, encodeReadyConfirmCompact, encodeHandshakeResponse, decodeHandshakeResponse, type AcousticToneCount } from './handshake.ts'
 export { ReceivedBlockMap } from './received-block-map.ts'
 export { fastReadyPackets, FastReadyAssembler } from './ready-control.ts'
 export type { HandshakeOffer, HandshakeResponse, HandshakeMaterial } from './handshake.ts'
+export { agreedOpticalProfileId } from './handshake.ts'
 export { HANDSHAKE_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_FRAGMENTS, MAX_HANDSHAKE_MESSAGE_BYTES, DENSE_HANDSHAKE_DATA_BYTES, DENSE_HANDSHAKE_PARITY_FRAGMENTS, MAX_DENSE_HANDSHAKE_FRAGMENTS, fragmentHandshakeMessage, fragmentDenseHandshakeResponse, rotateHandshakePackets, selectHandshakeResponseFragments, selectHandshakeNackRetransmissions, isFreshHandshakeNackRequest, parseHandshakeFragment, parseDenseHandshakeFragment, denseHandshakeSessionTag, AcousticFragmentReassembler, DenseHandshakeReassembler } from './acoustic-fragment.ts'
 export { AUDIO_PACE_FPS, AdaptiveOpticalPace, opticalPaceFps, recommendOpticalPaceCode, type OpticalPaceWindow } from './pacing.ts'
 export { TemporalOpticalRecovery } from './temporal-recovery.ts'
@@ -114,6 +115,15 @@ export function binaryRepeatedPayloadCapacity(profile: OpticalProfile) {
   return profile.id === BINARY_PROFILE.id || profile.id === WIDE_BINARY_PROFILE.id || profile.id === DENSE_BINARY_PROFILE.id
     ? Math.floor(profile.gridWidth * profile.gridHeight / (8 * BINARY_COPIES)) : 0
 }
+function binaryCopyCount(profile: OpticalProfile, payloadLength: number) {
+  if (!payloadLength || payloadLength > binaryRepeatedPayloadCapacity(profile)) return 1
+  // The experimental 320×180 profile has room for nine complete copies of
+  // phone-safe 800-byte shards. Use that room for error correction instead of
+  // a visually dominant filler pattern; keep legacy binary layouts unchanged.
+  return profile.id === DENSE_BINARY_PROFILE.id && payloadLength <= 800
+    ? Math.min(9, Math.floor(profile.gridWidth * profile.gridHeight / (payloadLength * 8)))
+    : BINARY_COPIES
+}
 // A single display cell was not reliably separable through the physical
 // screen/camera pair. Keep the four pure colors, but give each data symbol a
 // 2x2 physical footprint so the camera can sample well inside its edges.
@@ -168,7 +178,7 @@ export interface DecodedOpticalFrame {
   header: OpticalFrameHeader;
   payload: Uint8Array;
   metadataAgreement: number;
-  recovery?: 'spatial-copy' | 'majority' | 'phase' | 'temporal-majority';
+  recovery?: 'spatial-copy' | 'majority' | 'phase' | 'lens' | 'temporal-majority';
 }
 
 export interface DecodeFailure {
@@ -183,12 +193,15 @@ export interface DecodeFailure {
 export type OpticalDecodeResult = DecodedOpticalFrame | DecodeFailure
 
 export interface Point { x: number; y: number }
+export interface OpticalSamplingCalibration { radialCorrection: number; offset: Point }
 export interface OpticalBoundary {
   topLeft: Point;
   topRight: Point;
   bottomRight: Point;
   bottomLeft: Point;
   confidence: number;
+  /** Logical-cell calibration, independent of camera crop/scale/orientation. */
+  sampling?: OpticalSamplingCalibration;
 }
 
 export interface FinderReport {
@@ -302,8 +315,7 @@ export function encodeOpticalFrame(payload: Uint8Array, frameId: number, blockId
   if (payload.length > framePayloadCapacity(profile)) throw new Error(`Payload exceeds ${framePayloadCapacity(profile)} byte frame capacity`)
   const bootstrap = rgbBootstrapFrame(profile, frameId)
   const rgbCopies = profile.colorMode === 'rgb' ? bootstrap ? RGB_BOOTSTRAP_COPIES : RGB_DATA_COPIES : 1
-  const repeatedCapacity = binaryRepeatedPayloadCapacity(profile)
-  const binaryCopies = repeatedCapacity > 0 && payload.length <= repeatedCapacity ? BINARY_COPIES : 1
+  const binaryCopies = binaryCopyCount(profile, payload.length)
   if (profile.colorMode === 'rgb' && payload.length * 4 * rgbCopies > rgbSymbolCapacity(profile)) throw new Error('RGB payload exceeds spatial repetition capacity')
   if (binaryCopies > 1 && payload.length * 8 * binaryCopies > profile.gridWidth * profile.gridHeight) throw new Error('Binary payload exceeds spatial repetition capacity')
   const { width, height } = frameDimensions(profile)
@@ -431,8 +443,7 @@ export function decodeOpticalCells(cells: Uint8Array, profile = DEBUG_PROFILE): 
   if (header.payloadLength > framePayloadCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
   const bootstrap = rgbBootstrapFrame(profile, header.frameId)
   const rgbCopies = profile.colorMode === 'rgb' ? bootstrap ? RGB_BOOTSTRAP_COPIES : RGB_DATA_COPIES : 1
-  const repeatedCapacity = binaryRepeatedPayloadCapacity(profile)
-  const binaryCopies = repeatedCapacity > 0 && header.payloadLength <= repeatedCapacity ? BINARY_COPIES : 1
+  const binaryCopies = binaryCopyCount(profile, header.payloadLength)
   if (profile.colorMode === 'rgb' && header.payloadLength * 4 * rgbCopies > rgbSymbolCapacity(profile)) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
   if (binaryCopies > 1 && header.payloadLength * 8 * binaryCopies > profile.gridWidth * profile.gridHeight) return { ok: false, reason: 'payload-length', metadataAgreement: metadata.agreement, header }
   const readPayload = (startSymbol: number) => {
@@ -460,6 +471,22 @@ export function decodeOpticalCells(cells: Uint8Array, profile = DEBUG_PROFILE): 
         payload[index] |= (votes >= Math.ceil(copiesCount / 2) ? 1 : 0) << bit
       }
       recovery = 'majority'
+    }
+  }
+  // New dense frames add six copies between the three original positions.
+  // A receiver must still accept an older sender that populated only the
+  // original three positions and left the intervening cells as filler.
+  if (crc32(payload) !== header.payloadCrc32 && profile.id === DENSE_BINARY_PROFILE.id && binaryCopies > BINARY_COPIES) {
+    const symbolsPerCopy = header.payloadLength * 8, totalSymbols = profile.gridWidth * profile.gridHeight
+    const legacyCopies = Array.from({ length: BINARY_COPIES }, (_, copy) => readPayload(spatialCopyStart(copy, symbolsPerCopy, totalSymbols, BINARY_COPIES)))
+    for (const candidate of legacyCopies) if (crc32(candidate) === header.payloadCrc32) { payload = candidate; recovery = 'spatial-copy'; break }
+    if (crc32(payload) !== header.payloadCrc32) {
+      const majority = new Uint8Array(header.payloadLength)
+      for (let index = 0; index < majority.length; index++) for (let bit = 0; bit < 8; bit++) {
+        const votes = legacyCopies.reduce((sum, candidate) => sum + ((candidate[index] >>> bit) & 1), 0)
+        if (votes >= 2) majority[index] |= 1 << bit
+      }
+      if (crc32(majority) === header.payloadCrc32) { payload = majority; recovery = 'majority' }
     }
   }
   if (crc32(payload) !== header.payloadCrc32) return { ok: false, reason: 'payload-crc', metadataAgreement: metadata.agreement, header, candidatePayload: payload }
@@ -511,6 +538,15 @@ function sampleLuma(image: OpticalImage, x: number, y: number) {
 const FINDER_PROBES = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
 
 function finderScore(image: OpticalImage, centerX: number, centerY: number, radius: number) {
+  // Reject ordinary image positions before evaluating the full 121-probe
+  // marker. These eight probes sample the white and black rings along the
+  // axes; the full score below remains the actual acceptance criterion.
+  let quickWhite = 0, quickBlack = 0
+  for (const [column, row] of [[2, 5], [9, 5], [5, 2], [5, 9]])
+    quickWhite += luma(image, centerX + ((column + 0.5) / FINDER_SIZE * 2 - 1) * radius, centerY + ((row + 0.5) / FINDER_SIZE * 2 - 1) * radius)
+  for (const [column, row] of [[0, 5], [11, 5], [5, 0], [5, 11]])
+    quickBlack += luma(image, centerX + ((column + 0.5) / FINDER_SIZE * 2 - 1) * radius, centerY + ((row + 0.5) / FINDER_SIZE * 2 - 1) * radius)
+  if (quickWhite - quickBlack < 60) return 0
   let white = 0, black = 0, whiteCount = 0, blackCount = 0
   for (const row of FINDER_PROBES) for (const column of FINDER_PROBES) {
     const value = luma(image, centerX + ((column + 0.5) / FINDER_SIZE * 2 - 1) * radius, centerY + ((row + 0.5) / FINDER_SIZE * 2 - 1) * radius)
@@ -561,7 +597,7 @@ function findFinder(image: OpticalImage, minX: number, maxX: number, minY: numbe
   const step = profile.bitsPerSymbol === 2 ? Math.max(2, Math.round(nominalCell * 0.5)) : Math.max(3, Math.round(nominalCell * 0.65))
   const radii = radiusHint
     ? [0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.35].map(scale => radiusHint * scale)
-    : [0.24, 0.32, 0.42, 0.55, 0.7, 0.9, 1, 1.15, 1.45].map(scale => nominalCell * FINDER_SIZE / 2 * scale)
+    : [0.14, 0.19, 0.24, 0.32, 0.42, 0.55, 0.7, 0.9, 1, 1.15, 1.45].map(scale => nominalCell * FINDER_SIZE / 2 * scale)
   let best: FinderMatch | null = null
   for (let y = minY + step; y < maxY - step; y += step) for (let x = minX + step; x < maxX - step; x += step) for (const radius of radii) {
     if (x - radius < 0 || x + radius >= image.width || y - radius < 0 || y + radius >= image.height) continue
@@ -570,6 +606,52 @@ function findFinder(image: OpticalImage, minX: number, maxX: number, minY: numbe
   }
   if (!best || best.score < 55) return null
   return refineFinder(image, best, step * 2)
+}
+
+function findFinderCandidates(image: OpticalImage, profile: OpticalProfile): FinderMatch[] {
+  const logical = frameDimensions(profile), nominalCell = Math.min(image.width / logical.width, image.height / logical.height)
+  const step = Math.max(2, Math.round(nominalCell * 0.35))
+  const radii = [0.14, 0.18, 0.22, 0.27, 0.31, 0.36, 0.4, 0.46, 0.54, 0.64, 0.76, 0.9, 1.08].map(scale => nominalCell * FINDER_SIZE / 2 * scale)
+  const candidates: FinderMatch[] = []
+  for (let y = step; y < image.height - step; y += step) for (let x = step; x < image.width - step; x += step) for (const radius of radii) {
+    if (x - radius < 0 || x + radius >= image.width || y - radius < 0 || y + radius >= image.height) continue
+    const score = finderScore(image, x, y, radius)
+    if (score < 70) continue
+    const nearby = candidates.findIndex(item => Math.hypot(item.x - x, item.y - y) < Math.max(item.radius, radius) * 1.4)
+    if (nearby >= 0) { if (score > candidates[nearby].score) candidates[nearby] = { x, y, radius, score }; continue }
+    if (candidates.length < 16) candidates.push({ x, y, radius, score })
+    else {
+      let weakest = 0
+      for (let index = 1; index < candidates.length; index += 1) if (candidates[index].score < candidates[weakest].score) weakest = index
+      if (score > candidates[weakest].score) candidates[weakest] = { x, y, radius, score }
+    }
+  }
+  return candidates.map(item => refineFinder(image, item, step)).filter(item => item.score >= 55)
+}
+
+function findFlexibleBoundary(image: OpticalImage, profile: OpticalProfile): OpticalBoundary | null {
+  const matches = findFinderCandidates(image, profile)
+  if (matches.length < 4) return null
+  const { width, height } = frameDimensions(profile)
+  const expectedAspect = (width - FINDER_INSET * 2 - FINDER_SIZE) / (height - FINDER_INSET * 2 - FINDER_SIZE)
+  let best: { markers: FinderMatch[]; quality: number } | null = null
+  for (const tl of matches) for (const tr of matches) for (const br of matches) for (const bl of matches) {
+    if (tl === tr || tl === br || tl === bl || tr === br || tr === bl || br === bl) continue
+    const top = Math.hypot(tr.x - tl.x, tr.y - tl.y), bottom = Math.hypot(br.x - bl.x, br.y - bl.y)
+    const left = Math.hypot(bl.x - tl.x, bl.y - tl.y), right = Math.hypot(br.x - tr.x, br.y - tr.y)
+    const radius = (tl.radius + tr.radius + br.radius + bl.radius) / 4
+    if (Math.min(top, bottom, left, right) < radius * 5) continue
+    const aspect = (top + bottom) / (left + right)
+    const aspectError = Math.min(Math.abs(Math.log(aspect / expectedAspect)), Math.abs(Math.log(aspect * expectedAspect)))
+    if (aspectError > Math.log(1.8)) continue
+    const topDirection = (tr.x - tl.x) * (bl.y - tl.y) - (tr.y - tl.y) * (bl.x - tl.x)
+    if (topDirection < top * left * 0.35 || tr.x <= tl.x || bl.y <= tl.y || br.x <= bl.x || br.y <= tr.y) continue
+    const ratio = Math.max(tl.radius, tr.radius, br.radius, bl.radius) / Math.min(tl.radius, tr.radius, br.radius, bl.radius)
+    if (ratio > 2.2 || Math.max(top, bottom) / Math.min(top, bottom) > 2 || Math.max(left, right) / Math.min(left, right) > 2) continue
+    const quality = tl.score + tr.score + br.score + bl.score - 25 * aspectError - 20 * Math.log(ratio)
+    if (!best || quality > best.quality) best = { markers: [tl, tr, br, bl], quality }
+  }
+  return best ? orientFinderBoundary(image, profile, best.markers) : null
 }
 
 function findFinderNear(image: OpticalImage, predicted: Point, expectedRadius: number): FinderMatch | null {
@@ -633,6 +715,26 @@ function boundaryFromFinders(profile: OpticalProfile, topLeft: FinderMatch, topR
   return { topLeft: mapPoint(transform, { x: 0, y: 0 }), topRight: mapPoint(transform, { x: width, y: 0 }), bottomRight: mapPoint(transform, { x: width, y: height }), bottomLeft: mapPoint(transform, { x: 0, y: height }), confidence: 1 }
 }
 
+/** Finder rings are rotationally symmetric. Their presence alone cannot tell
+ * us which edge carries the header. Check all four assignments against the
+ * existing version/profile/header CRC before locking the camera geometry. */
+function orientFinderBoundary(image: OpticalImage, profile: OpticalProfile, markers: FinderMatch[]): OpticalBoundary | null {
+  const { width, height } = frameDimensions(profile)
+  const candidates = [0, 1, 2, 3].map(turn => {
+    const points = markers.map((_, index) => markers[(index + turn) % 4])
+    const across = Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y)
+    const down = Math.hypot(points[3].x - points[0].x, points[3].y - points[0].y)
+    return { boundary: boundaryFromFinders(profile, points[0], points[1], points[2], points[3]), error: Math.abs(Math.log(across / down / ((width - 16) / (height - 16)))) }
+  }).sort((a, b) => a.error - b.error)
+  for (const candidate of candidates) {
+    if (!candidate.boundary) continue
+    const sampled = sampleOpticalCells(image, candidate.boundary, profile)
+    const decoded = sampled && decodeOpticalCells(sampled.cells, profile)
+    if (decoded && (decoded.ok || decoded.header)) return candidate.boundary
+  }
+  return candidates[0].boundary
+}
+
 /** Search around the last known screen geometry before scanning the entire
  * camera frame. This is especially useful after a few torn/blurred frames. */
 export function detectOpticalBoundaryNear(image: OpticalImage, previous: OpticalBoundary, profile = DEBUG_PROFILE): OpticalBoundary | null {
@@ -646,36 +748,38 @@ export function detectOpticalBoundaryNear(image: OpticalImage, previous: Optical
   const points = [{ x: center, y: center }, { x: width - center, y: center }, { x: width - center, y: height - center }, { x: center, y: height - center }]
   const matches = points.map(point => findFinderNear(image, mapPoint(transform, point), radius))
   if (matches.some(match => !match)) return null
-  return boundaryFromFinders(profile, matches[0]!, matches[1]!, matches[2]!, matches[3]!)
+  const found = boundaryFromFinders(profile, matches[0]!, matches[1]!, matches[2]!, matches[3]!)
+  return found ? { ...found, sampling: previous.sampling } : null
 }
 
 /** Expensive first-frame detection. Later frames reuse the returned boundary. */
 export function detectOpticalBoundary(image: OpticalImage, profile = DEBUG_PROFILE, report?: FinderReport): OpticalBoundary | null {
+  const flexible = () => { const found = findFlexibleBoundary(image, profile); if (found && report) report.stage = 'complete'; return found }
   if (report) report.stage = 'top-left'
   const initialTopLeft = findFinder(image, 0, image.width * 0.55, 0, image.height * 0.55, profile)
-  if (!initialTopLeft) return null
+  if (!initialTopLeft) return flexible()
   if (report) { report.topLeft = initialTopLeft; report.stage = 'top-right' }
   const initialTopRight = findFinder(image, image.width * 0.45, image.width, 0, image.height * 0.55, profile)
-  if (!initialTopRight) return null
+  if (!initialTopRight) return flexible()
   if (report) { report.topRight = initialTopRight; report.stage = 'bottom-right' }
   const initialBottomRight = findFinder(image, Math.max(image.width * 0.45, initialTopRight.x - image.width * 0.16), Math.min(image.width, initialTopRight.x + image.width * 0.16), image.height * 0.45, image.height, profile, initialTopRight.radius)
-  if (!initialBottomRight) return null
+  if (!initialBottomRight) return flexible()
   if (report) { report.bottomRight = initialBottomRight; report.stage = 'bottom-left' }
   const radii = [initialTopLeft.radius, initialTopRight.radius, initialBottomRight.radius].sort((a, b) => a - b)
   const radiusHint = radii[1]
   const topLeft = findFinderNear(image, initialTopLeft, radiusHint)
-  if (!topLeft) { if (report) report.stage = 'top-left'; return null }
+  if (!topLeft) { if (report) report.stage = 'top-left'; return flexible() }
   const topRight = findFinderNear(image, initialTopRight, radiusHint)
-  if (!topRight) { if (report) report.stage = 'top-right'; return null }
+  if (!topRight) { if (report) report.stage = 'top-right'; return flexible() }
   const bottomRight = findFinderNear(image, initialBottomRight, radiusHint)
-  if (!bottomRight) { if (report) report.stage = 'bottom-right'; return null }
+  if (!bottomRight) { if (report) report.stage = 'bottom-right'; return flexible() }
   // A strongly skewed screen is not a parallelogram in camera pixels. Search
   // beneath the known left marker instead of extrapolating the fourth corner
   // from the other three, while keeping the established finder size.
-  const bottomLeft = findFinder(image, Math.max(0, topLeft.x - image.width * 0.18), Math.min(image.width * 0.55, topLeft.x + image.width * 0.18), image.height * 0.45, image.height, profile, (topLeft.radius + topRight.radius + bottomRight.radius) / 3)
-  if (!bottomLeft) return null
+  const bottomLeft = findFinder(image, Math.max(0, topLeft.x - image.width * 0.18), Math.min(image.width, topLeft.x + image.width * 0.18), Math.max(image.height * 0.35, topLeft.y + image.height * 0.12), image.height, profile, (topLeft.radius + topRight.radius + bottomRight.radius) / 3)
+  if (!bottomLeft) { if (report) report.stage = 'bottom-left'; return flexible() }
   if (report) { report.bottomLeft = bottomLeft; report.stage = 'complete' }
-  return boundaryFromFinders(profile, topLeft, topRight, bottomRight, bottomLeft)
+  return orientFinderBoundary(image, profile, [topLeft, topRight, bottomRight, bottomLeft])
 }
 
 function sampleRgbOpticalCells(image: OpticalImage, transform: number[], profile: OpticalProfile, dataOffset: Point) {
@@ -778,7 +882,7 @@ function sampleRgbOpticalCells(image: OpticalImage, transform: number[], profile
 
 /** Samples expected cells and their known calibration rails without rectifying
  * the full camera bitmap. Four-level thresholds follow local illumination. */
-export function sampleOpticalCells(image: OpticalImage, boundary: OpticalBoundary, profile = DEBUG_PROFILE, dataOffset: Point = { x: 0, y: 0 }) {
+export function sampleOpticalCells(image: OpticalImage, boundary: OpticalBoundary, profile = DEBUG_PROFILE, dataOffset: Point = boundary.sampling?.offset || { x: 0, y: 0 }, radialCorrection = boundary.sampling?.radialCorrection || 0) {
   const transform = transformForBoundary(boundary, profile), { width, height } = frameDimensions(profile)
   if (!transform) return null
   if (profile.colorMode === 'rgb') return sampleRgbOpticalCells(image, transform, profile, dataOffset)
@@ -836,7 +940,13 @@ export function sampleOpticalCells(image: OpticalImage, boundary: OpticalBoundar
     contrast = separations[Math.floor(separations.length * 0.1)]
   }
   const confidence = Math.max(0, Math.min(1, contrast / (localThresholds ? 42 : 128)))
+  const markerRadiusSquared = (width / 2 - FINDER_INSET - FINDER_SIZE / 2) ** 2 + (height / 2 - FINDER_INSET - FINDER_SIZE / 2) ** 2
   const sampleLogical = (x: number, y: number) => {
+    if (radialCorrection) {
+      const dx = x - width / 2, dy = y - height / 2
+      const factor = radialCorrection * ((dx * dx + dy * dy) / markerRadiusSquared - 1)
+      x += dx * factor; y += dy * factor
+    }
     const denominator = transform[6] * x + transform[7] * y + transform[8]
     return sampleLuma(image, (transform[0] * x + transform[1] * y + transform[2]) / denominator, (transform[3] * x + transform[4] * y + transform[5]) / denominator)
   }
@@ -845,7 +955,8 @@ export function sampleOpticalCells(image: OpticalImage, boundary: OpticalBoundar
   const patchSample = !!localThresholds && image.width >= width * 5 && image.height >= height * 5
   const cells = new Uint8Array(width * height)
   for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) {
-    const px = x + 0.5, py = y + 0.5
+    const dataCell = x >= DATA_INSET && x < width - DATA_INSET && y >= DATA_INSET && y < height - DATA_INSET
+    const px = x + 0.5 + (dataCell ? dataOffset.x : 0), py = y + 0.5 + (dataCell ? dataOffset.y : 0)
     let value = sampleLogical(px, py)
     if (patchSample) {
       const a = sampleLogical(px - 0.15, py - 0.15), b = sampleLogical(px + 0.15, py - 0.15)
@@ -863,7 +974,76 @@ export function sampleOpticalCells(image: OpticalImage, boundary: OpticalBoundar
     } else while (level < thresholds.length && value >= thresholds[level]) level += 1
     cells[cellIndex(width, x, y)] = level
   }
-  return { cells, symbolConfidence: confidence }
+  return { cells, symbolConfidence: confidence, binaryThreshold: profile.bitsPerSymbol === 1 ? thresholds[0] : undefined }
+}
+
+/** Bounded camera calibration after a CRC-valid header. Sample only the
+ * payload copies, not the entire grid for each hypothesis. The known header
+ * and timing rails rank lens corrections; payload CRC decides acceptance.
+ * Authentication remains the responsibility of the existing session layer. */
+export function recoverBinaryOpticalImage(image: OpticalImage, boundary: OpticalBoundary, profile: OpticalProfile, failure: DecodeFailure, threshold: number): OpticalImageDecode | null {
+  const header = failure.header
+  if (profile.bitsPerSymbol !== 1 || failure.reason !== 'payload-crc' || !header || header.profileId !== opticalProfileNumber(profile) || header.payloadLength < 1 || header.payloadLength > framePayloadCapacity(profile) || !Number.isFinite(threshold)) return null
+  const transform = transformForBoundary(boundary, profile)
+  if (!transform) return null
+  const { width, height } = frameDimensions(profile), cx = width / 2, cy = height / 2
+  const radiusSquared = (cx - FINDER_INSET - FINDER_SIZE / 2) ** 2 + (cy - FINDER_INSET - FINDER_SIZE / 2) ** 2
+  const sample = (x: number, y: number, radial: number) => {
+    const dx = x - cx, dy = y - cy, factor = radial * ((dx * dx + dy * dy) / radiusSquared - 1)
+    x += dx * factor; y += dy * factor
+    const divisor = transform[6] * x + transform[7] * y + transform[8]
+    return sampleLuma(image, (transform[0] * x + transform[1] * y + transform[2]) / divisor, (transform[3] * x + transform[4] * y + transform[5]) / divisor)
+  }
+  const headerBits = bytesToBits(headerBytes(header)), metadata = metadataCoordinates(profile)
+  const radials = [...new Set([boundary.sampling?.radialCorrection || 0, 0, ...Array.from({ length: 10 }, (_, index) => (index + 1) * 0.004), ...Array.from({ length: 5 }, (_, index) => -(index + 1) * 0.004)])]
+  const ranked = radials.map(radial => {
+    let score = 0
+    for (let index = 0; index < metadata.length; index += 3) {
+      const point = metadata[index], value = sample(point.x + 0.5, point.y + 0.5, radial)
+      score += headerBits[index % headerBits.length] ? value : 255 - value
+    }
+    for (let row = 0; row < profile.gridHeight; row += 3) {
+      const left = sample(DATA_INSET - 1.5, DATA_INSET + row + 0.5, radial)
+      const right = sample(width - DATA_INSET + 1.5, DATA_INSET + row + 0.5, radial)
+      score += row & 1 ? left + 255 - right : 255 - left + right
+    }
+    return { radial, score }
+  }).sort((a, b) => b.score - a.score)
+  const length = header.payloadLength, bitLength = length * 8, total = profile.gridWidth * profile.gridHeight
+  const copies = binaryCopyCount(profile, length)
+  const candidates = Array.from({ length: copies }, () => new Uint8Array(length))
+  const phases = [0, -0.25, 0.25, -0.5, 0.5]
+  const offsets = [boundary.sampling?.offset || { x: 0, y: 0 }, ...phases.flatMap(y => phases.map(x => ({ x, y })))].filter((point, index, all) => all.findIndex(other => other.x === point.x && other.y === point.y) === index)
+  // Dense phone frames often need more than one ranked lens hypothesis. This
+  // work runs only after a CRC-valid header and failed payload, and CRC32 is
+  // still the sole acceptance check for every candidate.
+  const limit = Math.min(200, Math.max(1, Math.floor(2_000_000 / (bitLength * copies))))
+  let attempts = 0
+  for (const { radial } of ranked) for (const offset of offsets) {
+    if (++attempts > limit) return null
+    let accepted: Uint8Array | undefined
+    for (let copy = 0; copy < copies; copy++) {
+      const start = spatialCopyStart(copy, bitLength, total, copies), payload = candidates[copy]
+      payload.fill(0)
+      for (let bit = 0; bit < bitLength; bit++) {
+        const cell = start + bit
+        const value = sample(DATA_INSET + cell % profile.gridWidth + 0.5 + offset.x, DATA_INSET + Math.floor(cell / profile.gridWidth) + 0.5 + offset.y, radial)
+        if (value >= threshold) payload[bit >>> 3] |= 1 << (7 - (bit & 7))
+      }
+      if (crc32(payload) === header.payloadCrc32) { accepted = payload.slice(); break }
+    }
+    if (!accepted && copies > 1) {
+      const majority = new Uint8Array(length)
+      for (let index = 0; index < length; index++) for (let bit = 0; bit < 8; bit++) {
+        let votes = 0
+        for (const candidate of candidates) votes += (candidate[index] >>> bit) & 1
+        if (votes > copies / 2) majority[index] |= 1 << bit
+      }
+      if (crc32(majority) === header.payloadCrc32) accepted = majority
+    }
+    if (accepted) return { ok: true, header, payload: accepted, metadataAgreement: failure.metadataAgreement || 0, recovery: radial ? 'lens' : 'phase', boundary: { ...boundary, sampling: { radialCorrection: radial, offset } } }
+  }
+  return null
 }
 
 export function decodeOpticalImage(image: OpticalImage, profile = DEBUG_PROFILE, previousBoundary?: OpticalBoundary): OpticalImageDecode {
@@ -872,6 +1052,10 @@ export function decodeOpticalImage(image: OpticalImage, profile = DEBUG_PROFILE,
   const sampled = sampleOpticalCells(image, boundary, profile)
   if (!sampled) return { ok: false, reason: 'finder', boundary }
   const decoded = decodeOpticalCells(sampled.cells, profile)
+  if (!decoded.ok && 'binaryThreshold' in sampled && sampled.binaryThreshold !== undefined) {
+    const recovered = recoverBinaryOpticalImage(image, boundary, profile, decoded, sampled.binaryThreshold)
+    if (recovered) return { ...recovered, symbolConfidence: sampled.symbolConfidence }
+  }
   return { ...decoded, boundary, sampledCells: sampled.cells, symbolConfidence: sampled.symbolConfidence }
 }
 

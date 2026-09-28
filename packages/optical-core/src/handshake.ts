@@ -31,6 +31,19 @@ export const HANDSHAKE_CAPABILITY_OFDM = 4096
 /** Version-2 optical symbols carry a per-visit AES-GCM nonce counter; audio
  * block reports become non-authoritative sparse scheduling hints. */
 export const HANDSHAKE_CAPABILITY_SPARSE_STREAM = 8192
+/** Receiver authenticates durable block-zero storage before cyclic file data. */
+export const HANDSHAKE_CAPABILITY_MANIFEST_READY = 16384
+/** A phone relay requests smaller repeated optical shards. This is bound to
+ * the authenticated transcript and changes no crypto or acoustic packet. */
+export const HANDSHAKE_CAPABILITY_PHONE_SAFE_SHARDS = 32768
+/** Sender accepts the receiver's transcript-bound optical profile selection.
+ * Older senders keep requiring a manually matched profile. */
+export const HANDSHAKE_CAPABILITY_RECEIVER_PROFILE = 65536
+export function agreedOpticalProfileId(offerCapabilities: number, responseCapabilities: number, senderProfileId: number, receiverProfileId: number) {
+  if (!Number.isInteger(senderProfileId) || !Number.isInteger(receiverProfileId) || senderProfileId < 1 || receiverProfileId < 1) throw new Error('Invalid optical profile')
+  if (senderProfileId !== receiverProfileId && !(offerCapabilities & responseCapabilities & HANDSHAKE_CAPABILITY_RECEIVER_PROFILE)) throw new Error('Optical profile mismatch; both peers must select the same profile')
+  return receiverProfileId
+}
 export const HANDSHAKE_NACK_MAGIC = Uint8Array.of(0x41, 0x48, 0x4e, 1) // AHN1
 export const HANDSHAKE_NACK_LEGACY = 1
 export const HANDSHAKE_NACK_DENSE = 2
@@ -79,6 +92,17 @@ export function sasCode(key: Uint8Array, transcriptHash: Uint8Array) {
   return `${Math.floor(value / 1_000_000).toString().padStart(3, '0')}-${(Math.floor(value / 1_000) % 1_000).toString().padStart(3, '0')}-${(value % 1_000).toString().padStart(3, '0')}`
 }
 export function keyConfirm(key: Uint8Array, transcriptHash: Uint8Array) { return hmacSha256(key, transcriptHash, utf8ToBytes('sender-confirm')) }
+/** The receiver emits this only after encrypted manifest block zero has been
+ * authenticated and committed to durable storage. It cannot be forged by a
+ * CRC-only acoustic status packet. */
+export function manifestReadyTag(key: Uint8Array, transcriptHash: Uint8Array, archiveDigest: Uint8Array, totalBlocks: number) {
+  check(key, 32, 'confirmation key'); check(transcriptHash, 32, 'transcript hash'); check(archiveDigest, 32, 'archive digest')
+  if (!Number.isInteger(totalBlocks) || totalBlocks < 1 || totalBlocks > 0xffffffff) throw new Error('Invalid block count')
+  return hmacSha256(key, utf8ToBytes('airgaplink/manifest-ready/v1'), transcriptHash, archiveDigest, u32(totalBlocks)).slice(0, 12)
+}
+export function verifyManifestReadyTag(key: Uint8Array, transcriptHash: Uint8Array, archiveDigest: Uint8Array, totalBlocks: number, received: Uint8Array) {
+  return received.length === 12 && equalBytes(received, manifestReadyTag(key, transcriptHash, archiveDigest, totalBlocks))
+}
 /** Twelve-byte authenticated completion, sent only after full archive SHA-256
  * verification. Compact legacy completion remains unchanged for older peers. */
 export function transferCompletionTag(key: Uint8Array, transcriptHash: Uint8Array, archiveDigest: Uint8Array, totalBlocks: number) {
